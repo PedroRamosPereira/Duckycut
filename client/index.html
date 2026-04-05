@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Duckycut</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <div id="panel">
+        <!-- Header -->
+        <div class="header">
+            <span class="header-icon">🦆</span>
+            <h1>Duckycut</h1>
+        </div>
+
+        <!-- Active Sequence -->
+        <div class="section">
+            <label class="section-label">ACTIVE SEQUENCE</label>
+            <div class="sequence-row">
+                <span id="sequenceName" class="sequence-name">No sequence</span>
+                <button id="btnRefreshSeq" class="icon-btn" title="Refresh sequence">&#x21bb;</button>
+            </div>
+        </div>
+
+        <!-- Detection Settings -->
+        <div class="section">
+            <label class="section-label">DETECTION SETTINGS</label>
+
+            <div class="setting-row">
+                <label>Threshold (dB)</label>
+                <div class="slider-group">
+                    <input type="range" id="threshold" min="-60" max="-5" value="-30" step="1">
+                    <span id="thresholdVal" class="setting-value">-30 dB</span>
+                </div>
+            </div>
+
+            <div class="setting-row">
+                <label>Min Silence Duration (ms)</label>
+                <div class="slider-group">
+                    <input type="range" id="minDuration" min="100" max="3000" value="750" step="10">
+                    <span id="minDurationVal" class="setting-value">750 ms</span>
+                </div>
+            </div>
+
+            <div class="setting-row">
+                <label>Padding (ms)</label>
+                <div class="slider-group">
+                    <input type="range" id="padding" min="0" max="1000" value="200" step="10">
+                    <span id="paddingVal" class="setting-value">200 ms</span>
+                </div>
+            </div>
+
+            <div class="setting-row">
+                <label>Delete Silence</label>
+                <div class="toggle-group">
+                    <span class="toggle-desc">When active, silence regions are removed from the timeline</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="deleteSilence" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <!-- Target Track -->
+        <div class="section">
+            <label class="section-label">Target Track</label>
+            <select id="targetTrack" class="dropdown">
+                <option value="all">All Tracks</option>
+            </select>
+        </div>
+
+        <!-- Analyze Button -->
+        <button id="btnAnalyze" class="btn-primary">Analyze</button>
+
+        <!-- Results -->
+        <div class="section" id="resultsSection" style="display:none;">
+            <label class="section-label">RESULTS</label>
+            <div id="resultsContent" class="results-content"></div>
+
+            <!-- Apply Cuts Button -->
+            <button id="btnApply" class="btn-primary btn-apply">Apply Cuts</button>
+        </div>
+
+        <!-- Progress -->
+        <div id="progressSection" style="display:none;">
+            <div class="progress-bar">
+                <div id="progressFill" class="progress-fill"></div>
+            </div>
+            <span id="progressText" class="progress-text">Processing...</span>
+        </div>
+
+        <!-- Status -->
+        <div id="statusBar" class="status-bar"></div>
+    </div>
+
+    <script>
+        // Preserve Node.js globals before they get overwritten in mixed-context
+        if (typeof require !== "undefined") {
+            window.nodeRequire = require;
+        }
+        if (typeof cep_node !== "undefined") {
+            window.cep_node = cep_node;
+        }
+    </script>
+    <script src="lib/CSInterface.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

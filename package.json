@@ -1,0 +1,19 @@
+{
+    "name": "duckycut",
+    "version": "1.0.0",
+    "description": "CEP extension for Adobe Premiere Pro — automatic silence detection and removal using FFmpeg",
+    "main": "server/index.js",
+    "scripts": {
+        "server": "node server/index.js",
+        "install-extension": "node scripts/install.js"
+    },
+    "keywords": [
+        "premiere-pro",
+        "cep",
+        "silence-detection",
+        "ffmpeg",
+        "video-editing"
+    ],
+    "author": "Duckycut",
+    "license": "MIT"
+}

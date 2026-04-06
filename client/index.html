@@ -7,10 +7,12 @@
 </head>
 <body>
     <div id="panel">
+
         <!-- Header -->
         <div class="header">
             <span class="header-icon">🦆</span>
             <h1>Duckycut</h1>
+            <span class="header-tag">Clean Cut</span>
         </div>
 
         <!-- Active Sequence -->
@@ -22,38 +24,128 @@
             </div>
         </div>
 
-        <!-- Detection Settings -->
+        <!-- Volume Detection -->
         <div class="section">
-            <label class="section-label">DETECTION SETTINGS</label>
-
-            <div class="setting-row">
-                <label>Threshold (dB)</label>
-                <div class="slider-group">
-                    <input type="range" id="threshold" min="-60" max="-5" value="-30" step="1">
-                    <span id="thresholdVal" class="setting-value">-30 dB</span>
+            <label class="section-label">SPEECH VOLUME</label>
+            <div class="probe-row">
+                <div id="volumeDisplay" class="volume-display">
+                    <span id="volumeIdle" class="vol-idle">Run Auto-Detect to calibrate</span>
+                    <div id="volumeStats" class="vol-stats" style="display:none;">
+                        <div class="vol-stat">
+                            <span class="vol-label">Mean</span>
+                            <span id="volMean" class="vol-value">—</span>
+                        </div>
+                        <div class="vol-separator"></div>
+                        <div class="vol-stat">
+                            <span class="vol-label">Peak</span>
+                            <span id="volMax" class="vol-value">—</span>
+                        </div>
+                        <div class="vol-separator"></div>
+                        <div class="vol-stat">
+                            <span class="vol-label">Channels</span>
+                            <span id="volChannels" class="vol-value">—</span>
+                        </div>
+                    </div>
                 </div>
+                <button id="btnProbe" class="btn-probe" title="Detect speech volume">
+                    Auto Detect
+                </button>
+            </div>
+        </div>
+
+        <!-- Cut Settings -->
+        <div class="section">
+            <label class="section-label">CUT SETTINGS</label>
+
+            <!-- Aggressiveness -->
+            <div class="setting-row">
+                <div class="aggro-label-row">
+                    <label>Aggressiveness</label>
+                    <div class="aggro-scale">
+                        <span class="aggro-hint-left">Gentle</span>
+                        <span class="aggro-hint-right">Aggressive</span>
+                    </div>
+                </div>
+                <div class="slider-group">
+                    <input type="range" id="aggressiveness" min="0" max="100" value="50" step="1" class="slider-aggro">
+                    <span id="aggressivenessVal" class="setting-value aggro-val">50</span>
+                </div>
+                <div id="aggroDescription" class="aggro-desc">Threshold: <span id="aggroThresholdHint">–</span></div>
             </div>
 
+            <!-- Min Cut Duration -->
             <div class="setting-row">
-                <label>Min Silence Duration (ms)</label>
+                <label>
+                    Min Silence to Cut (ms)
+                    <span class="param-hint">silence shorter than this is ignored</span>
+                </label>
                 <div class="slider-group">
                     <input type="range" id="minDuration" min="100" max="3000" value="750" step="10">
                     <span id="minDurationVal" class="setting-value">750 ms</span>
                 </div>
             </div>
+        </div>
 
-            <div class="setting-row">
-                <label>Padding (ms)</label>
-                <div class="slider-group">
-                    <input type="range" id="padding" min="0" max="1000" value="200" step="10">
-                    <span id="paddingVal" class="setting-value">200 ms</span>
+        <!-- Clean Cut Refinement -->
+        <div class="section">
+            <label class="section-label">
+                ✂️ CLEAN CUT
+                <span class="section-hint">boundary refinement</span>
+            </label>
+
+            <div class="cleancut-grid">
+                <div class="setting-row">
+                    <label>
+                        Padding In (ms)
+                        <span class="param-hint">lead-in before speech</span>
+                    </label>
+                    <div class="slider-group">
+                        <input type="range" id="paddingIn" min="0" max="500" value="50" step="10">
+                        <span id="paddingInVal" class="setting-value">50 ms</span>
+                    </div>
+                </div>
+
+                <div class="setting-row">
+                    <label>
+                        Padding Out (ms)
+                        <span class="param-hint">lead-out after speech</span>
+                    </label>
+                    <div class="slider-group">
+                        <input type="range" id="paddingOut" min="0" max="500" value="150" step="10">
+                        <span id="paddingOutVal" class="setting-value">150 ms</span>
+                    </div>
+                </div>
+
+                <div class="setting-row">
+                    <label>
+                        Min Clip Duration (ms)
+                        <span class="param-hint">drop speech segments shorter than this</span>
+                    </label>
+                    <div class="slider-group">
+                        <input type="range" id="minClipDuration" min="100" max="2000" value="500" step="50">
+                        <span id="minClipVal" class="setting-value">500 ms</span>
+                    </div>
+                </div>
+
+                <div class="setting-row">
+                    <label>
+                        Min Gap to Cut (ms)
+                        <span class="param-hint">fill pauses shorter than this</span>
+                    </label>
+                    <div class="slider-group">
+                        <input type="range" id="minGapFill" min="0" max="1000" value="300" step="10">
+                        <span id="minGapFillVal" class="setting-value">300 ms</span>
+                    </div>
                 </div>
             </div>
+        </div>
 
+        <!-- Delete Silence + Target Track -->
+        <div class="section">
             <div class="setting-row">
                 <label>Delete Silence</label>
                 <div class="toggle-group">
-                    <span class="toggle-desc">When active, silence regions are removed from the timeline</span>
+                    <span class="toggle-desc">Remove silence regions from the timeline</span>
                     <label class="toggle-switch">
                         <input type="checkbox" id="deleteSilence" checked>
                         <span class="toggle-slider"></span>
@@ -62,7 +154,6 @@
             </div>
         </div>
 
-        <!-- Target Track -->
         <div class="section">
             <label class="section-label">Target Track</label>
             <select id="targetTrack" class="dropdown">
@@ -77,8 +168,6 @@
         <div class="section" id="resultsSection" style="display:none;">
             <label class="section-label">RESULTS</label>
             <div id="resultsContent" class="results-content"></div>
-
-            <!-- Apply Cuts Button -->
             <button id="btnApply" class="btn-primary btn-apply">Apply Cuts</button>
         </div>
 
@@ -95,13 +184,8 @@
     </div>
 
     <script>
-        // Preserve Node.js globals before they get overwritten in mixed-context
-        if (typeof require !== "undefined") {
-            window.nodeRequire = require;
-        }
-        if (typeof cep_node !== "undefined") {
-            window.cep_node = cep_node;
-        }
+        if (typeof require !== "undefined")  window.nodeRequire = require;
+        if (typeof cep_node !== "undefined") window.cep_node = cep_node;
     </script>
     <script src="lib/CSInterface.js"></script>
     <script src="js/main.js"></script>

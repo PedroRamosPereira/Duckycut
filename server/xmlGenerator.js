@@ -1,27 +1,42 @@
 /**
  * Duckycut - FCP7 XML Generator (Turbo Mode)
- * Generates a Final Cut Pro 7 XML file that Premiere Pro can import natively.
- * Instead of making razor cuts via ExtendScript (O(N^2) and freezes Premiere),
- * we build a complete timeline description as XML and import it in one shot.
+ *
+ * FIX: Multi-track audio duplication bug.
+ *
+ * Root cause: the old generator never inserted <channelcount> into the file
+ * declaration, so Premiere assumed 1 audio channel and mapped every audio
+ * track to channel 1, duplicating A1 across all tracks.
+ *
+ * This version:
+ *   1. Declares <channelcount> in the master <file> element so Premiere knows
+ *      how many source channels the file actually has.
+ *   2. Uses proper <links> elements inside every clip item so Premiere can
+ *      correlate each video clip with its exact audio counterparts — without
+ *      this, Premiere re-resolves the mapping by guessing.
+ *   3. Removes the unused audioClipItems loop that was building data that
+ *      was never inserted into the XML.
+ *   4. Accepts audioChannelCount (from FFmpeg probe) separately from
+ *      audioTrackCount (Premiere timeline tracks) so the file declaration
+ *      always reflects reality even when both differ.
  */
 
-const fs = require("fs");
+const fs   = require("fs");
 const path = require("path");
 
 /**
- * Generates the FCP7 XML file with all keep zones as clip items.
  * @param {Object} opts
- * @param {Array<[number,number]>} opts.keepZones - Array of [start, end] in seconds.
- * @param {string} opts.mediaPath - Absolute path to the source media file.
- * @param {string} opts.sequenceName - Name for the new sequence.
- * @param {number} opts.framerate - Timeline framerate (e.g., 29.97).
- * @param {number} opts.width - Video width.
- * @param {number} opts.height - Video height.
- * @param {number} opts.audioSampleRate - Audio sample rate.
- * @param {number} opts.durationSeconds - Total media duration in seconds.
- * @param {string} opts.outputPath - Where to save the XML file.
- * @param {number} opts.audioTrackCount - Number of audio tracks.
- * @returns {string} The path to the generated XML file.
+ * @param {Array<[number,number]>} opts.keepZones
+ * @param {string}  opts.mediaPath
+ * @param {string}  opts.sequenceName
+ * @param {number}  opts.framerate
+ * @param {number}  opts.width
+ * @param {number}  opts.height
+ * @param {number}  opts.audioSampleRate
+ * @param {number}  opts.durationSeconds
+ * @param {string}  opts.outputPath
+ * @param {number}  opts.audioTrackCount   - Number of timeline audio tracks (from Premiere sequence)
+ * @param {number}  opts.audioChannelCount - Number of channels in the source file (from FFmpeg probe)
+ * @returns {string} outputPath
  */
 function generateFCP7XML(opts) {
     const {
@@ -35,105 +50,115 @@ function generateFCP7XML(opts) {
         durationSeconds,
         outputPath,
         audioTrackCount,
+        audioChannelCount,   // ← new: actual file channel count from probe
     } = opts;
 
-    // Calculate framerate as ntsc or not
-    const isNTSC = [29.97, 23.976, 59.94].some(
-        (f) => Math.abs(framerate - f) < 0.05
-    );
+    const isNTSC  = [29.97, 23.976, 59.94].some((f) => Math.abs(framerate - f) < 0.05);
     const timebase = Math.round(framerate);
-    const ntsc = isNTSC ? "TRUE" : "FALSE";
+    const ntsc     = isNTSC ? "TRUE" : "FALSE";
 
-    // Convert seconds to frames
-    const toFrames = (seconds) => Math.round(seconds * framerate);
+    const toFrames = (s) => Math.round(s * framerate);
 
-    // Total duration of the new sequence (sum of all keep zones)
-    const totalKeepFrames = keepZones.reduce(
-        (sum, z) => sum + toFrames(z[1] - z[0]),
-        0
-    );
+    const totalKeepFrames = keepZones.reduce((sum, z) => sum + toFrames(z[1] - z[0]), 0);
     const totalMediaFrames = toFrames(durationSeconds);
 
-    // File reference info
-    const fileName = path.basename(mediaPath);
+    const fileName    = path.basename(mediaPath);
     const filePathURL = "file://localhost/" + mediaPath.replace(/\\/g, "/").replace(/^\//, "");
 
-    // Build video clip items
+    // How many audio tracks to lay on the timeline
+    const numTracks = audioTrackCount || 1;
+    // How many channels the SOURCE FILE actually has (for the <file> declaration)
+    const numChannels = audioChannelCount || numTracks;
+
+    // ── Build video track clip items ──────────────────────────────
     let videoClipItems = "";
-    let audioClipItems = "";
-    let timelinePosition = 0;
+    let timelinePos    = 0;
 
     for (let i = 0; i < keepZones.length; i++) {
         const [startSec, endSec] = keepZones[i];
-        const inFrame = toFrames(startSec);
-        const outFrame = toFrames(endSec);
-        const duration = outFrame - inFrame;
-        const clipStart = timelinePosition;
-        const clipEnd = timelinePosition + duration;
-        const clipId = `clipitem-${i + 1}`;
-        const masterClipId = "masterclip-1";
+        const inFrame   = toFrames(startSec);
+        const outFrame  = toFrames(endSec);
+        const duration  = outFrame - inFrame;
+        const clipStart = timelinePos;
+        const clipEnd   = timelinePos + duration;
+        const vId       = `clipitem-${i + 1}-v`;
 
-        videoClipItems += `
-                        <clipitem id="${clipId}-v">
-                            <masterclipid>${masterClipId}</masterclipid>
-                            <name>${fileName}</name>
-                            <enabled>TRUE</enabled>
-                            <duration>${totalMediaFrames}</duration>
-                            <rate>
-                                <timebase>${timebase}</timebase>
-                                <ntsc>${ntsc}</ntsc>
-                            </rate>
-                            <start>${clipStart}</start>
-                            <end>${clipEnd}</end>
-                            <in>${inFrame}</in>
-                            <out>${outFrame}</out>
-                            <file id="file-1"/>
-                        </clipitem>`;
-
-        // Create audio clip items for each audio track
-        for (let t = 0; t < audioTrackCount; t++) {
-            audioClipItems += `
-                        <clipitem id="${clipId}-a${t + 1}">
-                            <masterclipid>${masterClipId}</masterclipid>
-                            <name>${fileName}</name>
-                            <enabled>TRUE</enabled>
-                            <duration>${totalMediaFrames}</duration>
-                            <rate>
-                                <timebase>${timebase}</timebase>
-                                <ntsc>${ntsc}</ntsc>
-                            </rate>
-                            <start>${clipStart}</start>
-                            <end>${clipEnd}</end>
-                            <in>${inFrame}</in>
-                            <out>${outFrame}</out>
-                            <file id="file-1"/>
-                            <sourcetrack>
+        // <links> — connect this video clip to each audio track's counterpart
+        let vLinks = "";
+        for (let t = 0; t < numTracks; t++) {
+            vLinks += `
+                            <link>
+                                <linkclipref>clipitem-${i + 1}-a${t + 1}</linkclipref>
                                 <mediatype>audio</mediatype>
                                 <trackindex>${t + 1}</trackindex>
-                            </sourcetrack>
-                        </clipitem>`;
+                                <clipindex>${i + 1}</clipindex>
+                            </link>`;
         }
 
-        timelinePosition = clipEnd;
+        videoClipItems += `
+                        <clipitem id="${vId}">
+                            <masterclipid>masterclip-1</masterclipid>
+                            <name>${fileName}</name>
+                            <enabled>TRUE</enabled>
+                            <duration>${totalMediaFrames}</duration>
+                            <rate>
+                                <timebase>${timebase}</timebase>
+                                <ntsc>${ntsc}</ntsc>
+                            </rate>
+                            <start>${clipStart}</start>
+                            <end>${clipEnd}</end>
+                            <in>${inFrame}</in>
+                            <out>${outFrame}</out>
+                            <file id="file-1"/>
+                            <links>${vLinks}
+                            </links>
+                        </clipitem>`;
+
+        timelinePos = clipEnd;
     }
 
-    // Build audio tracks XML
+    // ── Build audio tracks ────────────────────────────────────────
+    // One <track> per Premiere audio track.
+    // Each clip inside a track:
+    //   • <sourcetrack><trackindex> = which SOURCE CHANNEL of the file
+    //   • <links>                   = references to sibling clips (v + other a tracks)
     let audioTracksXML = "";
-    for (let t = 0; t < audioTrackCount; t++) {
-        // For simplicity, all audio tracks get the same clip items
-        // In a real scenario, you might filter by track
-        let trackClips = "";
+
+    for (let t = 0; t < numTracks; t++) {
+        let trackClipItems = "";
         let pos = 0;
+
         for (let i = 0; i < keepZones.length; i++) {
             const [startSec, endSec] = keepZones[i];
-            const inFrame = toFrames(startSec);
-            const outFrame = toFrames(endSec);
-            const duration = outFrame - inFrame;
+            const inFrame   = toFrames(startSec);
+            const outFrame  = toFrames(endSec);
+            const duration  = outFrame - inFrame;
             const clipStart = pos;
-            const clipEnd = pos + duration;
+            const clipEnd   = pos + duration;
+            const aId       = `clipitem-${i + 1}-a${t + 1}`;
 
-            trackClips += `
-                        <clipitem id="clipitem-${i + 1}-a${t + 1}-t">
+            // <links> — connect back to video clip + sibling audio clips
+            let aLinks = `
+                            <link>
+                                <linkclipref>clipitem-${i + 1}-v</linkclipref>
+                                <mediatype>video</mediatype>
+                                <trackindex>1</trackindex>
+                                <clipindex>${i + 1}</clipindex>
+                            </link>`;
+            for (let st = 0; st < numTracks; st++) {
+                if (st !== t) {
+                    aLinks += `
+                            <link>
+                                <linkclipref>clipitem-${i + 1}-a${st + 1}</linkclipref>
+                                <mediatype>audio</mediatype>
+                                <trackindex>${st + 1}</trackindex>
+                                <clipindex>${i + 1}</clipindex>
+                            </link>`;
+                }
+            }
+
+            trackClipItems += `
+                        <clipitem id="${aId}">
                             <masterclipid>masterclip-1</masterclipid>
                             <name>${fileName}</name>
                             <enabled>TRUE</enabled>
@@ -151,15 +176,28 @@ function generateFCP7XML(opts) {
                                 <mediatype>audio</mediatype>
                                 <trackindex>${t + 1}</trackindex>
                             </sourcetrack>
+                            <links>${aLinks}
+                            </links>
                         </clipitem>`;
+
             pos = clipEnd;
         }
 
         audioTracksXML += `
                     <track>
-                        ${trackClips}
+                        ${trackClipItems}
                         <outputchannelindex>${t + 1}</outputchannelindex>
                     </track>`;
+    }
+
+    // ── Build per-channel audio track declarations for <file> ─────
+    // Without this, Premiere infers channelcount=1 and maps every track to channel 1.
+    let fileAudioChannels = "";
+    for (let ch = 1; ch <= numChannels; ch++) {
+        fileAudioChannels += `
+                    <audio>
+                        <channelcount>1</channelcount>
+                    </audio>`;
     }
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -196,6 +234,7 @@ function generateFCP7XML(opts) {
                     <samplecharacteristics>
                         <depth>16</depth>
                         <samplerate>${audioSampleRate}</samplerate>
+                        <channelcount>${numChannels}</channelcount>
                     </samplecharacteristics>
                 </format>
                 ${audioTracksXML}
@@ -238,7 +277,9 @@ function generateFCP7XML(opts) {
                     <samplecharacteristics>
                         <depth>16</depth>
                         <samplerate>${audioSampleRate}</samplerate>
+                        <channelcount>${numChannels}</channelcount>
                     </samplecharacteristics>
+                    ${fileAudioChannels}
                 </audio>
             </media>
         </file>

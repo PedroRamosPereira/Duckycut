@@ -1,168 +1,186 @@
 /**
  * Duckycut - Panel Client Logic
- * Orchestrates the UI, CSInterface (ExtendScript), and Node.js modules.
  *
- * CEP panels with --enable-nodejs and --mixed-context have full Node.js
- * access directly in the browser context. No HTTP server needed.
+ * Features:
+ *   - Auto-detect speech volume via FFmpeg (probeAudio)
+ *   - Aggressiveness slider that maps to silence threshold calibrated against
+ *     the detected mean speech volume
+ *   - Min Silence to Cut (ms) slider for the minimum gap duration
+ *   - Clean Cut 5-step algorithm for boundary refinement
+ *   - Multi-track audio XML fix: passes audioChannelCount to xmlGenerator
  */
 
 (function () {
     "use strict";
 
-    // ── CSInterface ──
     const csInterface = new CSInterface();
 
-    // ── Node.js Modules (direct require, no HTTP server) ──
-    // In CEP with --enable-nodejs + --mixed-context, require() is available.
-    // __dirname points to the HTML file's folder (client/).
-    // We also try cep_node.require() which some CEP versions expose separately.
     let silenceDetector = null;
-    let xmlGenerator = null;
-    let nodeRequire = null;
-    let modulesError = "";
+    let xmlGenerator    = null;
+    let nodeRequire     = null;
+    let modulesError    = "";
 
+    // ── Load Node.js modules ─────────────────────────────────────
     try {
-        // CEP may expose Node's require differently depending on version/context:
-        // 1. window.nodeRequire — saved by us in index.html before scripts load
-        // 2. cep_node.require — CEP's separate Node context
-        // 3. require — available in mixed-context mode
-        if (typeof window.nodeRequire === "function") {
-            nodeRequire = window.nodeRequire;
-        } else if (typeof cep_node !== "undefined" && cep_node.require) {
-            nodeRequire = cep_node.require;
-        } else if (typeof window.cep_node !== "undefined" && window.cep_node.require) {
-            nodeRequire = window.cep_node.require;
-        } else if (typeof require === "function") {
-            nodeRequire = require;
-        }
-    } catch (e) {
-        modulesError = "No Node.js require available: " + e.message;
-    }
+        if      (typeof window.nodeRequire === "function")                     nodeRequire = window.nodeRequire;
+        else if (typeof cep_node !== "undefined" && cep_node.require)          nodeRequire = cep_node.require;
+        else if (typeof window.cep_node !== "undefined" && window.cep_node.require) nodeRequire = window.cep_node.require;
+        else if (typeof require === "function")                                nodeRequire = require;
+    } catch (e) { modulesError = "No Node.js require: " + e.message; }
 
     if (nodeRequire) {
         try {
             var nodePath = nodeRequire("path");
-
-            // Resolve the extension root to find server/ folder
             var serverDir = null;
 
-            // Strategy 1: __dirname (if available, points to HTML dir or script dir)
             if (typeof __dirname !== "undefined" && __dirname) {
-                // __dirname could be client/ or client/js/ — go up until we find server/
-                var candidate = nodePath.resolve(__dirname, "..", "server");
                 var nodeFs = nodeRequire("fs");
-                if (nodeFs.existsSync(candidate)) {
-                    serverDir = candidate;
-                } else {
-                    candidate = nodePath.resolve(__dirname, "server");
-                    if (nodeFs.existsSync(candidate)) {
-                        serverDir = candidate;
-                    }
-                }
+                var c1 = nodePath.resolve(__dirname, "..", "server");
+                var c2 = nodePath.resolve(__dirname, "server");
+                if (nodeFs.existsSync(c1)) serverDir = c1;
+                else if (nodeFs.existsSync(c2)) serverDir = c2;
             }
-
-            // Strategy 2: CSInterface.getSystemPath
             if (!serverDir) {
                 var extPath = csInterface.getSystemPath(SystemPath.EXTENSION);
                 if (extPath) {
-                    // CEP on Windows returns /c/Users/... — convert to C:/Users/...
                     extPath = extPath.replace(/^\/([a-zA-Z])\//, "$1:/");
                     serverDir = nodePath.join(extPath, "server");
                 }
             }
-
-            // Strategy 3: document.location based
             if (!serverDir) {
                 var docPath = decodeURIComponent(document.location.pathname);
-                // Remove leading slash on Windows paths: /C:/Users/...
-                if (docPath.match(/^\/[a-zA-Z]:\//)) {
-                    docPath = docPath.substring(1);
-                }
-                var docDir = nodePath.dirname(docPath);
-                serverDir = nodePath.resolve(docDir, "..", "server");
+                if (docPath.match(/^\/[a-zA-Z]:\//)) docPath = docPath.substring(1);
+                serverDir = nodePath.resolve(nodePath.dirname(docPath), "..", "server");
             }
 
             silenceDetector = nodeRequire(nodePath.join(serverDir, "silenceDetector.js"));
-            xmlGenerator = nodeRequire(nodePath.join(serverDir, "xmlGenerator.js"));
-            console.log("[Duckycut] Modules loaded from:", serverDir);
+            xmlGenerator    = nodeRequire(nodePath.join(serverDir, "xmlGenerator.js"));
         } catch (e) {
             modulesError = e.message;
-            console.error("[Duckycut] Module load error:", e.message, e.stack);
         }
     } else if (!modulesError) {
-        modulesError = "Node.js not available in this CEP context";
+        modulesError = "Node.js not available";
     }
 
-    // ── DOM Elements ──
-    const elSequenceName = document.getElementById("sequenceName");
-    const elBtnRefreshSeq = document.getElementById("btnRefreshSeq");
-    const elThreshold = document.getElementById("threshold");
-    const elThresholdVal = document.getElementById("thresholdVal");
-    const elMinDuration = document.getElementById("minDuration");
-    const elMinDurationVal = document.getElementById("minDurationVal");
-    const elPadding = document.getElementById("padding");
-    const elPaddingVal = document.getElementById("paddingVal");
-    const elDeleteSilence = document.getElementById("deleteSilence");
-    const elTargetTrack = document.getElementById("targetTrack");
-    const elBtnAnalyze = document.getElementById("btnAnalyze");
-    const elResultsSection = document.getElementById("resultsSection");
-    const elResultsContent = document.getElementById("resultsContent");
-    const elBtnApply = document.getElementById("btnApply");
+    // ── DOM elements ─────────────────────────────────────────────
+    const elSequenceName    = document.getElementById("sequenceName");
+    const elBtnRefreshSeq   = document.getElementById("btnRefreshSeq");
+    const elBtnProbe        = document.getElementById("btnProbe");
+    const elVolumeIdle      = document.getElementById("volumeIdle");
+    const elVolumeStats     = document.getElementById("volumeStats");
+    const elVolMean         = document.getElementById("volMean");
+    const elVolMax          = document.getElementById("volMax");
+    const elVolChannels     = document.getElementById("volChannels");
+    const elAggressiveness  = document.getElementById("aggressiveness");
+    const elAggressivenessVal = document.getElementById("aggressivenessVal");
+    const elAggroThresholdHint = document.getElementById("aggroThresholdHint");
+    const elMinDuration     = document.getElementById("minDuration");
+    const elMinDurationVal  = document.getElementById("minDurationVal");
+    const elPaddingIn       = document.getElementById("paddingIn");
+    const elPaddingInVal    = document.getElementById("paddingInVal");
+    const elPaddingOut      = document.getElementById("paddingOut");
+    const elPaddingOutVal   = document.getElementById("paddingOutVal");
+    const elMinClipDuration = document.getElementById("minClipDuration");
+    const elMinClipVal      = document.getElementById("minClipVal");
+    const elMinGapFill      = document.getElementById("minGapFill");
+    const elMinGapFillVal   = document.getElementById("minGapFillVal");
+    const elDeleteSilence   = document.getElementById("deleteSilence");
+    const elTargetTrack     = document.getElementById("targetTrack");
+    const elBtnAnalyze      = document.getElementById("btnAnalyze");
+    const elResultsSection  = document.getElementById("resultsSection");
+    const elResultsContent  = document.getElementById("resultsContent");
+    const elBtnApply        = document.getElementById("btnApply");
     const elProgressSection = document.getElementById("progressSection");
-    const elProgressFill = document.getElementById("progressFill");
-    const elProgressText = document.getElementById("progressText");
-    const elStatusBar = document.getElementById("statusBar");
+    const elProgressFill    = document.getElementById("progressFill");
+    const elProgressText    = document.getElementById("progressText");
+    const elStatusBar       = document.getElementById("statusBar");
 
-    // ── State ──
-    let sequenceInfo = null;
-    let analysisResult = null;
-    let keepZones = null;
+    // ── State ─────────────────────────────────────────────────────
+    let sequenceInfo    = null;
+    let analysisResult  = null;
+    let keepZones       = null;
+    let probeResult     = null;   // { meanVolume, maxVolume, channelCount }
 
-    // ── Init ──
+    // ── Init ─────────────────────────────────────────────────────
     function init() {
         bindSliders();
         bindButtons();
         refreshSequence();
+        updateAggroHint();
 
         if (silenceDetector && xmlGenerator) {
-            setStatus("Ready", "success");
+            setStatus("Ready — run Auto Detect to calibrate", "success");
         } else {
             setStatus("Module error: " + (modulesError || "unknown"), "error");
         }
     }
 
-    // ── Slider Bindings ──
+    // ── Sliders ───────────────────────────────────────────────────
     function bindSliders() {
-        elThreshold.addEventListener("input", function () {
-            elThresholdVal.textContent = elThreshold.value + " dB";
-        });
-        elMinDuration.addEventListener("input", function () {
+        elMinDuration.addEventListener("input", () => {
             elMinDurationVal.textContent = elMinDuration.value + " ms";
         });
-        elPadding.addEventListener("input", function () {
-            elPaddingVal.textContent = elPadding.value + " ms";
+        elPaddingIn.addEventListener("input", () => {
+            elPaddingInVal.textContent = elPaddingIn.value + " ms";
+        });
+        elPaddingOut.addEventListener("input", () => {
+            elPaddingOutVal.textContent = elPaddingOut.value + " ms";
+        });
+        elMinClipDuration.addEventListener("input", () => {
+            elMinClipVal.textContent = elMinClipDuration.value + " ms";
+        });
+        elMinGapFill.addEventListener("input", () => {
+            elMinGapFillVal.textContent = elMinGapFill.value + " ms";
+        });
+        elAggressiveness.addEventListener("input", () => {
+            elAggressivenessVal.textContent = elAggressiveness.value;
+            updateAggroHint();
         });
     }
 
-    // ── Button Bindings ──
+    // ── Aggressiveness → threshold mapping ───────────────────────
+    //
+    // With a known mean volume (from probe):
+    //   gentle (0)     → threshold = meanVolume - 15 dB
+    //   moderate (50)  → threshold = meanVolume - 8 dB
+    //   aggressive(100)→ threshold = meanVolume - 2 dB
+    //
+    // Without probe, fall back to absolute scale anchored at -30 dB.
+    //
+    function computeThreshold(aggressiveness) {
+        var a = parseInt(aggressiveness, 10);
+
+        if (probeResult) {
+            // Linear: 0→mean-15, 100→mean-2
+            var offset = 15 - (a * 13 / 100);  // 15 down to 2
+            return Math.round(probeResult.meanVolume - offset);
+        }
+
+        // Fallback absolute scale: 0→-50 dB, 100→-15 dB
+        return Math.round(-50 + a * 35 / 100);
+    }
+
+    function updateAggroHint() {
+        var threshold = computeThreshold(elAggressiveness.value);
+        elAggroThresholdHint.textContent = threshold + " dB";
+        elAggressivenessVal.textContent  = elAggressiveness.value;
+    }
+
+    // ── Buttons ───────────────────────────────────────────────────
     function bindButtons() {
         elBtnRefreshSeq.addEventListener("click", refreshSequence);
+        elBtnProbe.addEventListener("click", runProbe);
         elBtnAnalyze.addEventListener("click", runAnalysis);
         elBtnApply.addEventListener("click", applyCuts);
     }
 
-    // ── Eval ExtendScript (Promise wrapper) ──
     function evalScript(script) {
-        return new Promise(function (resolve) {
-            csInterface.evalScript(script, function (result) {
-                resolve(result);
-            });
-        });
+        return new Promise((resolve) => csInterface.evalScript(script, resolve));
     }
 
-    // ── Refresh Sequence Info ──
+    // ── Refresh Sequence ─────────────────────────────────────────
     function refreshSequence() {
-        evalScript("getActiveSequenceInfo()").then(function (result) {
+        evalScript("getActiveSequenceInfo()").then((result) => {
             try {
                 if (result === "EvalScript_ErrMessage" || !result) {
                     elSequenceName.textContent = "No sequence";
@@ -170,28 +188,21 @@
                     return;
                 }
                 var info = JSON.parse(result);
-                if (info.error) {
-                    elSequenceName.textContent = "No sequence";
-                    sequenceInfo = null;
-                    return;
-                }
+                if (info.error) { elSequenceName.textContent = "No sequence"; sequenceInfo = null; return; }
                 sequenceInfo = info;
                 elSequenceName.textContent = info.name;
                 populateTrackDropdown(info.audioTracks);
                 setStatus("Sequence: " + info.name, "success");
             } catch (e) {
-                console.error("[Duckycut] Parse error:", e, "Raw:", result);
-                elSequenceName.textContent = "No sequence";
-                sequenceInfo = null;
+                elSequenceName.textContent = "No sequence"; sequenceInfo = null;
             }
         });
     }
 
-    // ── Populate Track Dropdown ──
     function populateTrackDropdown(tracks) {
         elTargetTrack.innerHTML = '<option value="all">All Tracks</option>';
         if (tracks) {
-            tracks.forEach(function (t) {
+            tracks.forEach((t) => {
                 var opt = document.createElement("option");
                 opt.value = t.index;
                 opt.textContent = t.name + (t.clipCount > 0 ? "" : " (empty)");
@@ -200,203 +211,231 @@
         }
     }
 
-    // ── Get Media Path from ExtendScript ──
     function getMediaPath() {
         var trackVal = elTargetTrack.value;
         var trackIdx = trackVal === "all" ? "0" : trackVal;
-        return evalScript("getAudioTrackMediaPath(" + trackIdx + ")").then(function (result) {
-            try {
-                var data = JSON.parse(result);
-                return data.path || null;
-            } catch (e) {
-                return null;
-            }
+        return evalScript("getAudioTrackMediaPath(" + trackIdx + ")").then((r) => {
+            try { return JSON.parse(r).path || null; } catch (e) { return null; }
         });
     }
 
-    // ── Run Analysis ──
-    function runAnalysis() {
+    // ── Auto Detect Volume ────────────────────────────────────────
+    function runProbe() {
+        if (!silenceDetector || !silenceDetector.probeAudio) {
+            setStatus("probeAudio not available", "error");
+            return;
+        }
         if (!sequenceInfo) {
-            setStatus("No active sequence. Open a sequence first.", "error");
+            setStatus("No active sequence", "error");
             return;
         }
-        if (!silenceDetector) {
-            setStatus("Silence detector module not loaded.", "error");
-            return;
-        }
+
+        elBtnProbe.disabled = true;
+        elBtnProbe.textContent = "Detecting...";
+        setStatus("Probing audio volume...", "");
+
+        getMediaPath().then((mediaPath) => {
+            if (!mediaPath) {
+                setStatus("No media found in track", "error");
+                elBtnProbe.disabled = false;
+                elBtnProbe.textContent = "Auto Detect";
+                return;
+            }
+
+            silenceDetector.probeAudio(mediaPath)
+                .then((result) => {
+                    probeResult = result;
+
+                    elVolumeIdle.style.display  = "none";
+                    elVolumeStats.style.display = "flex";
+                    elVolMean.textContent     = result.meanVolume.toFixed(1) + " dB";
+                    elVolMax.textContent      = result.maxVolume.toFixed(1)  + " dB";
+                    elVolChannels.textContent = result.channelCount;
+
+                    updateAggroHint();
+                    setStatus("Volume detected — threshold calibrated", "success");
+                    elBtnProbe.disabled = false;
+                    elBtnProbe.textContent = "Re-Detect";
+                })
+                .catch((err) => {
+                    setStatus("Probe error: " + err.message, "error");
+                    elBtnProbe.disabled = false;
+                    elBtnProbe.textContent = "Auto Detect";
+                });
+        });
+    }
+
+    // ── Run Analysis ─────────────────────────────────────────────
+    function runAnalysis() {
+        if (!sequenceInfo) { setStatus("No active sequence", "error"); return; }
+        if (!silenceDetector) { setStatus("Silence detector not loaded", "error"); return; }
 
         elBtnAnalyze.disabled = true;
         elResultsSection.style.display = "none";
         showProgress("Locating media files...");
 
-        getMediaPath().then(function (mediaPath) {
+        getMediaPath().then((mediaPath) => {
             if (!mediaPath) {
-                setStatus("No media found in the selected track.", "error");
-                hideProgress();
-                elBtnAnalyze.disabled = false;
-                return;
+                setStatus("No media found in the selected track", "error");
+                hideProgress(); elBtnAnalyze.disabled = false; return;
             }
 
             updateProgress(20, "Running FFmpeg silence detection...");
 
-            var threshold = parseInt(elThreshold.value, 10);
+            var threshold   = computeThreshold(elAggressiveness.value);
             var minDuration = parseInt(elMinDuration.value, 10) / 1000;
 
-            silenceDetector
-                .detectSilence(mediaPath, threshold, minDuration)
-                .then(function (result) {
+            silenceDetector.detectSilence(mediaPath, threshold, minDuration)
+                .then((result) => {
                     analysisResult = result;
-                    updateProgress(80, "Calculating keep zones...");
+                    updateProgress(80, "Applying Clean Cut algorithm...");
 
-                    var paddingSec = parseInt(elPadding.value, 10) / 1000;
-                    keepZones = computeKeepZones(
+                    keepZones = computeCleanCutZones(
                         result.silenceIntervals,
                         result.mediaDuration,
-                        paddingSec
+                        {
+                            paddingIn:       parseInt(elPaddingIn.value, 10)       / 1000,
+                            paddingOut:      parseInt(elPaddingOut.value, 10)      / 1000,
+                            minClipDuration: parseInt(elMinClipDuration.value, 10) / 1000,
+                            minGapDuration:  parseInt(elMinGapFill.value, 10)      / 1000,
+                        }
                     );
 
                     updateProgress(100, "Analysis complete!");
                     showResults(result, keepZones);
-                    setStatus("Analysis complete", "success");
-                    hideProgress();
-                    elBtnAnalyze.disabled = false;
+                    setStatus("Analysis complete — threshold: " + threshold + " dB", "success");
+                    hideProgress(); elBtnAnalyze.disabled = false;
                 })
-                .catch(function (err) {
+                .catch((err) => {
                     setStatus("FFmpeg error: " + err.message, "error");
-                    hideProgress();
-                    elBtnAnalyze.disabled = false;
+                    hideProgress(); elBtnAnalyze.disabled = false;
                 });
         });
     }
 
-    // ── Compute Keep Zones ──
-    function computeKeepZones(silenceIntervals, totalDuration, paddingSec) {
-        if (!silenceIntervals || silenceIntervals.length === 0) {
-            return [[0, totalDuration]];
-        }
+    // ══════════════════════════════════════════════════════════════
+    //  CLEAN CUT ALGORITHM  (5-step)
+    // ══════════════════════════════════════════════════════════════
+    function computeCleanCutZones(silenceIntervals, totalDuration, opts) {
+        var paddingIn       = opts.paddingIn       || 0;
+        var paddingOut      = opts.paddingOut      || 0;
+        var minClipDuration = opts.minClipDuration || 0;
+        var minGapDuration  = opts.minGapDuration  || 0;
 
-        var speechZones = [];
+        if (!silenceIntervals || silenceIntervals.length === 0) return [[0, totalDuration]];
+
+        // Step 1: invert silence → raw speech zones
+        var rawSpeech = [];
         var cursor = 0;
-
         for (var i = 0; i < silenceIntervals.length; i++) {
-            var silStart = silenceIntervals[i][0];
-            var silEnd = silenceIntervals[i][1];
-            if (silStart > cursor) {
-                speechZones.push([cursor, silStart]);
-            }
+            var silStart = Math.max(0, silenceIntervals[i][0]);
+            var silEnd   = silenceIntervals[i][1];
+            if (silStart > cursor) rawSpeech.push([cursor, silStart]);
             cursor = silEnd;
         }
-        if (cursor < totalDuration) {
-            speechZones.push([cursor, totalDuration]);
+        if (cursor < totalDuration) rawSpeech.push([cursor, totalDuration]);
+        if (rawSpeech.length === 0) return [[0, totalDuration]];
+
+        // Step 2: fill micro-gaps (don't cut tiny pauses)
+        var gapFilled = [rawSpeech[0].slice()];
+        for (var j = 1; j < rawSpeech.length; j++) {
+            var last    = gapFilled[gapFilled.length - 1];
+            var gapSize = rawSpeech[j][0] - last[1];
+            if (gapSize < minGapDuration) last[1] = rawSpeech[j][1];
+            else gapFilled.push(rawSpeech[j].slice());
         }
 
-        // Apply padding
-        var padded = speechZones.map(function (zone) {
-            return [
-                Math.max(0, zone[0] - paddingSec),
-                Math.min(totalDuration, zone[1] + paddingSec),
-            ];
-        });
+        // Step 3: drop micro-segments (discard noise bursts)
+        var valid = gapFilled.filter((z) => (z[1] - z[0]) >= minClipDuration);
+        if (valid.length === 0) return [[0, totalDuration]];
 
+        // Step 4: asymmetric padding
+        var padded = valid.map((z) => [
+            Math.max(0,             z[0] - paddingIn),
+            Math.min(totalDuration, z[1] + paddingOut),
+        ]);
+
+        // Step 5: merge overlaps
         return mergeOverlappingIntervals(padded);
     }
 
-    // ── Merge Overlapping Intervals ──
     function mergeOverlappingIntervals(arr) {
         if (!arr || arr.length === 0) return [];
-
-        arr.sort(function (a, b) { return a[0] - b[0]; });
+        arr.sort((a, b) => a[0] - b[0]);
         var merged = [[arr[0][0], arr[0][1]]];
-
         for (var i = 1; i < arr.length; i++) {
             var last = merged[merged.length - 1];
-            if (arr[i][0] <= last[1]) {
-                last[1] = Math.max(last[1], arr[i][1]);
-            } else {
-                merged.push([arr[i][0], arr[i][1]]);
-            }
+            if (arr[i][0] <= last[1]) last[1] = Math.max(last[1], arr[i][1]);
+            else merged.push([arr[i][0], arr[i][1]]);
         }
-
         return merged;
     }
 
-    // ── Show Results ──
+    // ── Show Results ─────────────────────────────────────────────
     function showResults(analysis, zones) {
-        var totalKept = zones.reduce(function (sum, z) { return sum + (z[1] - z[0]); }, 0);
+        var totalKept = zones.reduce((sum, z) => sum + (z[1] - z[0]), 0);
         var timeSaved = analysis.mediaDuration - totalKept;
 
         elResultsContent.innerHTML =
-            '<div class="result-line"><span>Silence regions found:</span><span class="result-value">' + analysis.silenceCount + '</span></div>' +
-            '<div class="result-line"><span>Time saved:</span><span class="result-value">' + formatTime(timeSaved) + '</span></div>' +
-            '<div class="result-line"><span>Keep zones:</span><span class="result-value">' + zones.length + '</span></div>' +
-            '<div class="result-line"><span>Final duration:</span><span class="result-value">' + formatTime(totalKept) + '</span></div>';
+            '<div class="result-line"><span>Silence regions found:</span><span class="result-value">' + analysis.silenceCount    + '</span></div>' +
+            '<div class="result-line"><span>Time saved:</span><span class="result-value">'            + formatTime(timeSaved)    + '</span></div>' +
+            '<div class="result-line"><span>Keep zones:</span><span class="result-value">'            + zones.length             + '</span></div>' +
+            '<div class="result-line"><span>Final duration:</span><span class="result-value">'        + formatTime(totalKept)    + '</span></div>';
 
         elResultsSection.style.display = "flex";
         elBtnApply.style.display = elDeleteSilence.checked ? "block" : "none";
     }
 
-    // ── Apply Cuts (Turbo Mode — FCP7 XML) ──
+    // ── Apply Cuts ───────────────────────────────────────────────
     function applyCuts() {
-        if (!keepZones || keepZones.length === 0) {
-            setStatus("No keep zones. Run analysis first.", "error");
-            return;
-        }
-        if (!xmlGenerator) {
-            setStatus("XML generator module not loaded.", "error");
-            return;
-        }
+        if (!keepZones || keepZones.length === 0) { setStatus("No keep zones — run analysis first", "error"); return; }
+        if (!xmlGenerator) { setStatus("XML generator not loaded", "error"); return; }
 
         elBtnApply.disabled = true;
         showProgress("Generating FCP7 XML...");
 
-        // Get sequence settings + media path + project dir in parallel
         Promise.all([
             evalScript("getSequenceSettings()"),
             getMediaPath(),
             evalScript("getProjectPath()"),
-        ]).then(function (results) {
+        ]).then((results) => {
             var seqSettings, mediaPath, projectDir;
-            try { seqSettings = JSON.parse(results[0]); } catch (e) { seqSettings = {}; }
+            try   { seqSettings = JSON.parse(results[0]); } catch (e) { seqSettings = {}; }
             mediaPath = results[1];
-            try {
-                var projData = JSON.parse(results[2]);
-                projectDir = projData.projectDir || null;
-            } catch (e) {
-                projectDir = null;
-            }
+            try { var pd = JSON.parse(results[2]); projectDir = pd.projectDir || null; }
+            catch (e) { projectDir = null; }
 
             if (!projectDir) {
-                setStatus("Save the project first.", "error");
-                hideProgress();
-                elBtnApply.disabled = false;
-                return;
+                setStatus("Save the project first", "error");
+                hideProgress(); elBtnApply.disabled = false; return;
             }
 
-            var path = nodeRequire("path");
+            var nPath       = nodeRequire("path");
             var xmlFileName = sequenceInfo.name + "_duckycut_" + Date.now() + ".xml";
-            var outputPath = path.join(projectDir, xmlFileName);
+            var outputPath  = nPath.join(projectDir, xmlFileName);
 
             updateProgress(40, "Writing XML file...");
 
             try {
                 xmlGenerator.generateFCP7XML({
-                    keepZones: keepZones,
-                    mediaPath: mediaPath,
-                    sequenceName: sequenceInfo.name,
-                    framerate: seqSettings.framerate || 29.97,
-                    width: seqSettings.width || 1920,
-                    height: seqSettings.height || 1080,
-                    audioSampleRate: seqSettings.audioSampleRate || 48000,
-                    durationSeconds: seqSettings.durationSeconds || analysisResult.mediaDuration,
-                    outputPath: outputPath,
-                    audioTrackCount: sequenceInfo.audioTracks ? sequenceInfo.audioTracks.length : 1,
+                    keepZones:        keepZones,
+                    mediaPath:        mediaPath,
+                    sequenceName:     sequenceInfo.name,
+                    framerate:        seqSettings.framerate       || 29.97,
+                    width:            seqSettings.width           || 1920,
+                    height:           seqSettings.height          || 1080,
+                    audioSampleRate:  seqSettings.audioSampleRate || 48000,
+                    durationSeconds:  seqSettings.durationSeconds || analysisResult.mediaDuration,
+                    outputPath:       outputPath,
+                    audioTrackCount:  sequenceInfo.audioTracks ? sequenceInfo.audioTracks.length : 1,
+                    // ← pass actual channel count from probe so the <file> declaration is correct
+                    audioChannelCount: probeResult ? probeResult.channelCount : (sequenceInfo.audioTracks ? sequenceInfo.audioTracks.length : 1),
                 });
 
                 updateProgress(70, "Importing XML into Premiere...");
 
-                // Normalize path for ExtendScript (forward slashes)
                 var escapedPath = outputPath.replace(/\\/g, "/");
-                evalScript('importXMLToProject("' + escapedPath + '")').then(function (result) {
+                evalScript('importXMLToProject("' + escapedPath + '")').then((result) => {
                     try {
                         var data = JSON.parse(result);
                         if (data.success) {
@@ -405,49 +444,38 @@
                         } else {
                             setStatus("Import error: " + (data.message || "unknown"), "error");
                         }
-                    } catch (e) {
-                        setStatus("Import parse error: " + e.message, "error");
-                    }
-                    hideProgress();
-                    elBtnApply.disabled = false;
+                    } catch (e) { setStatus("Import parse error: " + e.message, "error"); }
+                    hideProgress(); elBtnApply.disabled = false;
                 });
             } catch (err) {
                 setStatus("XML generation error: " + err.message, "error");
-                hideProgress();
-                elBtnApply.disabled = false;
+                hideProgress(); elBtnApply.disabled = false;
             }
         });
     }
 
-    // ── UI Helpers ──
+    // ── UI Helpers ────────────────────────────────────────────────
     function showProgress(text) {
         elProgressSection.style.display = "block";
         elProgressFill.style.width = "0%";
         elProgressText.textContent = text;
     }
-
-    function updateProgress(percent, text) {
-        elProgressFill.style.width = percent + "%";
+    function updateProgress(pct, text) {
+        elProgressFill.style.width = pct + "%";
         if (text) elProgressText.textContent = text;
     }
-
     function hideProgress() {
-        setTimeout(function () {
-            elProgressSection.style.display = "none";
-        }, 1500);
+        setTimeout(() => { elProgressSection.style.display = "none"; }, 1500);
     }
-
-    function setStatus(message, type) {
-        elStatusBar.textContent = message;
+    function setStatus(msg, type) {
+        elStatusBar.textContent = msg;
         elStatusBar.className = "status-bar" + (type ? " " + type : "");
     }
-
     function formatTime(seconds) {
         var m = Math.floor(seconds / 60);
         var s = Math.round(seconds % 60);
         return m + "m " + s + "s";
     }
 
-    // ── Start ──
     init();
 })();

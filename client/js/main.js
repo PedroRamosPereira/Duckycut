@@ -214,66 +214,6 @@
         });
     }
 
-    // ── Audio Pre-render / Mixdown ────────────────────────────────
-    /**
-     * Attempts to export a rendered WAV mixdown from the selected audio tracks.
-     * If Premiere's encoder API is unavailable, falls back to the raw source file.
-     *
-     * Returns { path, wasRendered } where wasRendered=true means FFmpeg will
-     * analyse the actual Premiere mix (handles multi-track, effects, etc.).
-     */
-    function getAnalysisAudioPath(projectDir) {
-        return new Promise((resolve) => {
-            if (!projectDir || elTargetTrack.value !== "all") {
-                // Single-track mode or no project dir: use raw media
-                getMediaPath().then((p) => resolve({ path: p, wasRendered: false }));
-                return;
-            }
-
-            // Build list of selected track indices
-            var selectedIndices = [];
-            if (sequenceInfo && sequenceInfo.audioTracks) {
-                sequenceInfo.audioTracks.forEach((t) => {
-                    if (t.clipCount > 0) selectedIndices.push(t.index);
-                });
-            }
-            if (selectedIndices.length === 0) selectedIndices = [0];
-
-            var wavPath = (projectDir + "/duckycut_mixdown_" + Date.now() + ".wav")
-                            .replace(/\\/g, "/");
-
-            var indicesJson = JSON.stringify(selectedIndices)
-                                .replace(/"/g, '\\"');
-
-            evalScript('exportAudioMixdown("' + indicesJson + '","' + wavPath + '")')
-                .then((r) => {
-                    try {
-                        var res = JSON.parse(r);
-                        if (res.success && res.path) {
-                            // Verify the file actually exists before trusting it
-                            try {
-                                var fs2 = nodeRequire("fs");
-                                if (fs2.existsSync(res.path)) {
-                                    setStatus("Audio mixdown rendered — analysing render...", "success");
-                                    resolve({ path: res.path, wasRendered: true });
-                                    return;
-                                }
-                            } catch (e) {}
-                        }
-                        // AME export failed or file not found — fall back
-                        var fallback = res.path || res.fallback && res.path;
-                        if (!fallback) {
-                            getMediaPath().then((p) => resolve({ path: p, wasRendered: false }));
-                        } else {
-                            resolve({ path: fallback, wasRendered: false });
-                        }
-                    } catch (e) {
-                        getMediaPath().then((p) => resolve({ path: p, wasRendered: false }));
-                    }
-                });
-        });
-    }
-
     // ── Auto Detect Volume ────────────────────────────────────────
     function runProbe() {
         if (!silenceDetector || !silenceDetector.probeAudio) {
@@ -350,21 +290,75 @@
 
             updateProgress(10, "Preparing audio for analysis...");
 
-            // Step 2: get audio path (render mixdown or raw source)
-            getAnalysisAudioPath(projectDir).then(({ path: audioPath, wasRendered }) => {
-                if (!audioPath) {
-                    setStatus("No audio media found in sequence", "error");
-                    hideProgress(); elBtnAnalyze.disabled = false; return;
-                }
+            // Step 2: resolve audio source
+            var threshold   = computeThreshold(elAggressiveness.value);
+            var minDuration = parseInt(elMinDuration.value, 10) / 1000;
 
-                var renderNote = wasRendered ? " (from rendered mixdown)" : " (from source file)";
+            if (elTargetTrack.value === "all") {
+                // ── Native Premiere mixdown (preserves effects/EQ/volume) ──
+                var fs2 = nodeRequire("fs");
+                var os2 = nodeRequire("os");
+                var tempWav = (os2.tmpdir() + "/duckycut_temp_mixdown_" + Date.now() + ".wav")
+                                .replace(/\\/g, "/");
+
+                updateProgress(15, "Exporting sequence audio via Premiere...");
+
+                var extensionRoot = csInterface.getSystemPath(SystemPath.EXTENSION)
+                                        .replace(/\\/g, "/");
+
+                evalScript('exportSequenceAudio("' + tempWav.replace(/"/g, '\\"') + '","' + extensionRoot.replace(/"/g, '\\"') + '")')
+                    .then(function (r) {
+                        var res;
+                        try { res = JSON.parse(r); } catch (e) { res = {}; }
+
+                        if (!res.success) {
+                            setStatus("Mixdown failed: " + (res.error || "unknown"), "error");
+                            hideProgress(); elBtnAnalyze.disabled = false;
+                            return;
+                        }
+
+                        // ── Poll until the WAV file appears on disk ──
+                        var pollInterval = 500;   // ms
+                        var pollTimeout  = 120000; // 2 min max
+                        var elapsed      = 0;
+
+                        function waitForFile() {
+                            if (fs2.existsSync(tempWav)) {
+                                // Small extra wait to ensure file is fully written
+                                setTimeout(function () { runDetection(tempWav, true); }, 300);
+                                return;
+                            }
+                            elapsed += pollInterval;
+                            if (elapsed >= pollTimeout) {
+                                setStatus("Timeout: mixdown file not found after 2 min", "error");
+                                hideProgress(); elBtnAnalyze.disabled = false;
+                                return;
+                            }
+                            updateProgress(
+                                15 + Math.min(10, Math.round(elapsed / pollTimeout * 10)),
+                                "Waiting for Premiere to finish rendering..."
+                            );
+                            setTimeout(waitForFile, pollInterval);
+                        }
+                        waitForFile();
+                    });
+            } else {
+                // ── Single track: use raw source file directly ──
+                getMediaPath().then(function (audioPath) {
+                    if (!audioPath) {
+                        setStatus("No audio media found in track", "error");
+                        hideProgress(); elBtnAnalyze.disabled = false; return;
+                    }
+                    runDetection(audioPath, false);
+                });
+            }
+
+            function runDetection(audioPath, wasRendered) {
+                var renderNote = wasRendered ? " (rendered mixdown)" : " (source file)";
                 updateProgress(25, "Running FFmpeg silence detection" + renderNote + "...");
 
-                var threshold   = computeThreshold(elAggressiveness.value);
-                var minDuration = parseInt(elMinDuration.value, 10) / 1000;
-
                 silenceDetector.detectSilence(audioPath, threshold, minDuration)
-                    .then((result) => {
+                    .then(function (result) {
                         analysisResult = result;
                         updateProgress(80, "Applying Clean Cut algorithm...");
 
@@ -379,8 +373,8 @@
                             }
                         );
 
-                        // Clean up temp WAV if we rendered one
-                        if (wasRendered && audioPath.includes("duckycut_mixdown_")) {
+                        // Clean up temp WAV
+                        if (wasRendered) {
                             try { nodeRequire("fs").unlinkSync(audioPath); } catch (e) {}
                         }
 
@@ -389,11 +383,15 @@
                         setStatus("Analysis complete — threshold: " + threshold + " dB" + renderNote, "success");
                         hideProgress(); elBtnAnalyze.disabled = false;
                     })
-                    .catch((err) => {
+                    .catch(function (err) {
+                        // Clean up temp WAV on error too
+                        if (wasRendered) {
+                            try { nodeRequire("fs").unlinkSync(audioPath); } catch (e) {}
+                        }
                         setStatus("FFmpeg error: " + err.message, "error");
                         hideProgress(); elBtnAnalyze.disabled = false;
                     });
-            });
+            }
         });
     }
 

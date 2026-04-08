@@ -387,6 +387,45 @@ function getAllMediaPaths() {
 }
 
 /**
+ * Exports the active sequence audio (all tracks, with effects) to a WAV file.
+ *
+ * Uses exportAsMediaDirect() which renders synchronously through Premiere's
+ * own audio engine — preserving volume, EQ, and all audio effects.
+ *
+ * @param {string} outputPath    - Destination WAV path (forward slashes OK)
+ * @param {string} extensionPath - Root directory of the CEP extension
+ */
+function exportSequenceAudio(outputPath, extensionPath) {
+    try {
+        var seq = app.project.activeSequence;
+        if (!seq) return '{"success":false,"error":"No active sequence"}';
+
+        var outNorm    = outputPath.replace(/\//g, "\\");
+        var presetPath = extensionPath.replace(/\//g, "\\") + "\\WAV.epr";
+
+        var presetFile = new File(presetPath);
+        if (!presetFile.exists) {
+            return '{"success":false,"error":"WAV.epr not found at: ' + presetPath.replace(/\\/g, '\\\\') + '"}';
+        }
+
+        // ── Export ──────────────────────────────────────────────────
+        seq.exportAsMediaDirect(
+            outNorm,
+            presetPath,
+            app.encoder.ENCODE_IN_TO_OUT
+        );
+
+        return JSON.stringify({
+            success: true,
+            path:    outputPath,
+            preset:  presetPath
+        });
+    } catch (e) {
+        return '{"success":false,"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
+    }
+}
+
+/**
  * Imports an FCP7 XML file into the Premiere project.
  */
 function importXMLToProject(xmlPath) {

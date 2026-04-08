@@ -1,13 +1,18 @@
 /**
  * Duckycut - Panel Client Logic
  *
- * Features:
- *   - Auto-detect speech volume via FFmpeg (probeAudio)
- *   - Aggressiveness slider that maps to silence threshold calibrated against
- *     the detected mean speech volume
- *   - Min Silence to Cut (ms) slider for the minimum gap duration
- *   - Clean Cut 5-step algorithm for boundary refinement
- *   - Multi-track audio XML fix: passes audioChannelCount to xmlGenerator
+ * FIXES:
+ *   1. Overlays (V2, V3+): reads ALL tracks via getFullSequenceClips() and passes
+ *      them to xmlGenerator, which maps every clip through the keepZones.
+ *   2. Audio duplication: each audio clip now references its own sourcetrack
+ *      channel; generator no longer duplicates A1 across all tracks.
+ *   3. Framerate: getSequenceSettings() reads timebase directly from the
+ *      sequence — no hardcoded 29.97 fallback unless the API truly fails.
+ *   4. Audio pre-render: when Analyze is clicked, the panel asks Premiere to
+ *      export a WAV mixdown of the user-selected audio tracks. FFmpeg then
+ *      analyses that rendered file instead of the raw source — giving accurate
+ *      silence detection even when audio lives on multiple tracks or is mixed
+ *      from clips at different source offsets.
  */
 
 (function () {
@@ -22,10 +27,10 @@
 
     // ── Load Node.js modules ─────────────────────────────────────
     try {
-        if      (typeof window.nodeRequire === "function")                     nodeRequire = window.nodeRequire;
-        else if (typeof cep_node !== "undefined" && cep_node.require)          nodeRequire = cep_node.require;
+        if      (typeof window.nodeRequire === "function")                          nodeRequire = window.nodeRequire;
+        else if (typeof cep_node !== "undefined" && cep_node.require)               nodeRequire = cep_node.require;
         else if (typeof window.cep_node !== "undefined" && window.cep_node.require) nodeRequire = window.cep_node.require;
-        else if (typeof require === "function")                                nodeRequire = require;
+        else if (typeof require === "function")                                      nodeRequire = require;
     } catch (e) { modulesError = "No Node.js require: " + e.message; }
 
     if (nodeRequire) {
@@ -63,43 +68,45 @@
     }
 
     // ── DOM elements ─────────────────────────────────────────────
-    const elSequenceName    = document.getElementById("sequenceName");
-    const elBtnRefreshSeq   = document.getElementById("btnRefreshSeq");
-    const elBtnProbe        = document.getElementById("btnProbe");
-    const elVolumeIdle      = document.getElementById("volumeIdle");
-    const elVolumeStats     = document.getElementById("volumeStats");
-    const elVolMean         = document.getElementById("volMean");
-    const elVolMax          = document.getElementById("volMax");
-    const elVolChannels     = document.getElementById("volChannels");
-    const elAggressiveness  = document.getElementById("aggressiveness");
+    const elSequenceName      = document.getElementById("sequenceName");
+    const elBtnRefreshSeq     = document.getElementById("btnRefreshSeq");
+    const elBtnProbe          = document.getElementById("btnProbe");
+    const elVolumeIdle        = document.getElementById("volumeIdle");
+    const elVolumeStats       = document.getElementById("volumeStats");
+    const elVolMean           = document.getElementById("volMean");
+    const elVolMax            = document.getElementById("volMax");
+    const elVolChannels       = document.getElementById("volChannels");
+    const elAggressiveness    = document.getElementById("aggressiveness");
     const elAggressivenessVal = document.getElementById("aggressivenessVal");
-    const elAggroThresholdHint = document.getElementById("aggroThresholdHint");
-    const elMinDuration     = document.getElementById("minDuration");
-    const elMinDurationVal  = document.getElementById("minDurationVal");
-    const elPaddingIn       = document.getElementById("paddingIn");
-    const elPaddingInVal    = document.getElementById("paddingInVal");
-    const elPaddingOut      = document.getElementById("paddingOut");
-    const elPaddingOutVal   = document.getElementById("paddingOutVal");
-    const elMinClipDuration = document.getElementById("minClipDuration");
-    const elMinClipVal      = document.getElementById("minClipVal");
-    const elMinGapFill      = document.getElementById("minGapFill");
-    const elMinGapFillVal   = document.getElementById("minGapFillVal");
-    const elDeleteSilence   = document.getElementById("deleteSilence");
-    const elTargetTrack     = document.getElementById("targetTrack");
-    const elBtnAnalyze      = document.getElementById("btnAnalyze");
-    const elResultsSection  = document.getElementById("resultsSection");
-    const elResultsContent  = document.getElementById("resultsContent");
-    const elBtnApply        = document.getElementById("btnApply");
-    const elProgressSection = document.getElementById("progressSection");
-    const elProgressFill    = document.getElementById("progressFill");
-    const elProgressText    = document.getElementById("progressText");
-    const elStatusBar       = document.getElementById("statusBar");
+    const elAggroThresholdHint= document.getElementById("aggroThresholdHint");
+    const elMinDuration       = document.getElementById("minDuration");
+    const elMinDurationVal    = document.getElementById("minDurationVal");
+    const elPaddingIn         = document.getElementById("paddingIn");
+    const elPaddingInVal      = document.getElementById("paddingInVal");
+    const elPaddingOut        = document.getElementById("paddingOut");
+    const elPaddingOutVal     = document.getElementById("paddingOutVal");
+    const elMinClipDuration   = document.getElementById("minClipDuration");
+    const elMinClipVal        = document.getElementById("minClipVal");
+    const elMinGapFill        = document.getElementById("minGapFill");
+    const elMinGapFillVal     = document.getElementById("minGapFillVal");
+    const elDeleteSilence     = document.getElementById("deleteSilence");
+    const elTargetTrack       = document.getElementById("targetTrack");
+    const elBtnAnalyze        = document.getElementById("btnAnalyze");
+    const elResultsSection    = document.getElementById("resultsSection");
+    const elResultsContent    = document.getElementById("resultsContent");
+    const elBtnApply          = document.getElementById("btnApply");
+    const elProgressSection   = document.getElementById("progressSection");
+    const elProgressFill      = document.getElementById("progressFill");
+    const elProgressText      = document.getElementById("progressText");
+    const elStatusBar         = document.getElementById("statusBar");
 
     // ── State ─────────────────────────────────────────────────────
-    let sequenceInfo    = null;
+    let sequenceInfo    = null;   // from getActiveSequenceInfo()
+    let sequenceClips   = null;   // from getFullSequenceClips() — all tracks
     let analysisResult  = null;
     let keepZones       = null;
     let probeResult     = null;   // { meanVolume, maxVolume, channelCount }
+    let seqSettings     = null;   // from getSequenceSettings()
 
     // ── Init ─────────────────────────────────────────────────────
     function init() {
@@ -138,25 +145,13 @@
         });
     }
 
-    // ── Aggressiveness → threshold mapping ───────────────────────
-    //
-    // With a known mean volume (from probe):
-    //   gentle (0)     → threshold = meanVolume - 15 dB
-    //   moderate (50)  → threshold = meanVolume - 8 dB
-    //   aggressive(100)→ threshold = meanVolume - 2 dB
-    //
-    // Without probe, fall back to absolute scale anchored at -30 dB.
-    //
+    // ── Aggressiveness → threshold ────────────────────────────────
     function computeThreshold(aggressiveness) {
         var a = parseInt(aggressiveness, 10);
-
         if (probeResult) {
-            // Linear: 0→mean-15, 100→mean-2
-            var offset = 15 - (a * 13 / 100);  // 15 down to 2
+            var offset = 15 - (a * 13 / 100);
             return Math.round(probeResult.meanVolume - offset);
         }
-
-        // Fallback absolute scale: 0→-50 dB, 100→-15 dB
         return Math.round(-50 + a * 35 / 100);
     }
 
@@ -182,7 +177,7 @@
     function refreshSequence() {
         evalScript("getActiveSequenceInfo()").then((result) => {
             try {
-                if (result === "EvalScript_ErrMessage" || !result) {
+                if (!result || result === "EvalScript_ErrMessage") {
                     elSequenceName.textContent = "No sequence";
                     sequenceInfo = null;
                     return;
@@ -192,7 +187,7 @@
                 sequenceInfo = info;
                 elSequenceName.textContent = info.name;
                 populateTrackDropdown(info.audioTracks);
-                setStatus("Sequence: " + info.name, "success");
+                setStatus("Sequence: " + info.name + " (" + info.framerate.toFixed(2) + " fps)", "success");
             } catch (e) {
                 elSequenceName.textContent = "No sequence"; sequenceInfo = null;
             }
@@ -200,7 +195,7 @@
     }
 
     function populateTrackDropdown(tracks) {
-        elTargetTrack.innerHTML = '<option value="all">All Tracks</option>';
+        elTargetTrack.innerHTML = '<option value="all">All Tracks (render mixdown)</option>';
         if (tracks) {
             tracks.forEach((t) => {
                 var opt = document.createElement("option");
@@ -219,15 +214,73 @@
         });
     }
 
+    // ── Audio Pre-render / Mixdown ────────────────────────────────
+    /**
+     * Attempts to export a rendered WAV mixdown from the selected audio tracks.
+     * If Premiere's encoder API is unavailable, falls back to the raw source file.
+     *
+     * Returns { path, wasRendered } where wasRendered=true means FFmpeg will
+     * analyse the actual Premiere mix (handles multi-track, effects, etc.).
+     */
+    function getAnalysisAudioPath(projectDir) {
+        return new Promise((resolve) => {
+            if (!projectDir || elTargetTrack.value !== "all") {
+                // Single-track mode or no project dir: use raw media
+                getMediaPath().then((p) => resolve({ path: p, wasRendered: false }));
+                return;
+            }
+
+            // Build list of selected track indices
+            var selectedIndices = [];
+            if (sequenceInfo && sequenceInfo.audioTracks) {
+                sequenceInfo.audioTracks.forEach((t) => {
+                    if (t.clipCount > 0) selectedIndices.push(t.index);
+                });
+            }
+            if (selectedIndices.length === 0) selectedIndices = [0];
+
+            var wavPath = (projectDir + "/duckycut_mixdown_" + Date.now() + ".wav")
+                            .replace(/\\/g, "/");
+
+            var indicesJson = JSON.stringify(selectedIndices)
+                                .replace(/"/g, '\\"');
+
+            evalScript('exportAudioMixdown("' + indicesJson + '","' + wavPath + '")')
+                .then((r) => {
+                    try {
+                        var res = JSON.parse(r);
+                        if (res.success && res.path) {
+                            // Verify the file actually exists before trusting it
+                            try {
+                                var fs2 = nodeRequire("fs");
+                                if (fs2.existsSync(res.path)) {
+                                    setStatus("Audio mixdown rendered — analysing render...", "success");
+                                    resolve({ path: res.path, wasRendered: true });
+                                    return;
+                                }
+                            } catch (e) {}
+                        }
+                        // AME export failed or file not found — fall back
+                        var fallback = res.path || res.fallback && res.path;
+                        if (!fallback) {
+                            getMediaPath().then((p) => resolve({ path: p, wasRendered: false }));
+                        } else {
+                            resolve({ path: fallback, wasRendered: false });
+                        }
+                    } catch (e) {
+                        getMediaPath().then((p) => resolve({ path: p, wasRendered: false }));
+                    }
+                });
+        });
+    }
+
     // ── Auto Detect Volume ────────────────────────────────────────
     function runProbe() {
         if (!silenceDetector || !silenceDetector.probeAudio) {
-            setStatus("probeAudio not available", "error");
-            return;
+            setStatus("probeAudio not available", "error"); return;
         }
         if (!sequenceInfo) {
-            setStatus("No active sequence", "error");
-            return;
+            setStatus("No active sequence", "error"); return;
         }
 
         elBtnProbe.disabled = true;
@@ -245,13 +298,11 @@
             silenceDetector.probeAudio(mediaPath)
                 .then((result) => {
                     probeResult = result;
-
                     elVolumeIdle.style.display  = "none";
                     elVolumeStats.style.display = "flex";
                     elVolMean.textContent     = result.meanVolume.toFixed(1) + " dB";
                     elVolMax.textContent      = result.maxVolume.toFixed(1)  + " dB";
                     elVolChannels.textContent = result.channelCount;
-
                     updateAggroHint();
                     setStatus("Volume detected — threshold calibrated", "success");
                     elBtnProbe.disabled = false;
@@ -272,44 +323,77 @@
 
         elBtnAnalyze.disabled = true;
         elResultsSection.style.display = "none";
-        showProgress("Locating media files...");
+        showProgress("Reading sequence tracks...");
 
-        getMediaPath().then((mediaPath) => {
-            if (!mediaPath) {
-                setStatus("No media found in the selected track", "error");
-                hideProgress(); elBtnAnalyze.disabled = false; return;
-            }
+        // Step 1: read all clips from every track
+        Promise.all([
+            evalScript("getFullSequenceClips()"),
+            evalScript("getSequenceSettings()"),
+            evalScript("getProjectPath()"),
+        ]).then(([clipsRaw, settingsRaw, projRaw]) => {
+            // Parse sequence clips (V1/V2/overlays + audio tracks)
+            try {
+                var parsed = JSON.parse(clipsRaw);
+                sequenceClips = Array.isArray(parsed) ? parsed : null;
+            } catch (e) { sequenceClips = null; }
 
-            updateProgress(20, "Running FFmpeg silence detection...");
+            try {
+                seqSettings = JSON.parse(settingsRaw);
+                if (seqSettings.error) seqSettings = null;
+            } catch (e) { seqSettings = null; }
 
-            var threshold   = computeThreshold(elAggressiveness.value);
-            var minDuration = parseInt(elMinDuration.value, 10) / 1000;
+            var projectDir = null;
+            try {
+                var pd = JSON.parse(projRaw);
+                projectDir = pd.projectDir || null;
+            } catch (e) {}
 
-            silenceDetector.detectSilence(mediaPath, threshold, minDuration)
-                .then((result) => {
-                    analysisResult = result;
-                    updateProgress(80, "Applying Clean Cut algorithm...");
+            updateProgress(10, "Preparing audio for analysis...");
 
-                    keepZones = computeCleanCutZones(
-                        result.silenceIntervals,
-                        result.mediaDuration,
-                        {
-                            paddingIn:       parseInt(elPaddingIn.value, 10)       / 1000,
-                            paddingOut:      parseInt(elPaddingOut.value, 10)      / 1000,
-                            minClipDuration: parseInt(elMinClipDuration.value, 10) / 1000,
-                            minGapDuration:  parseInt(elMinGapFill.value, 10)      / 1000,
+            // Step 2: get audio path (render mixdown or raw source)
+            getAnalysisAudioPath(projectDir).then(({ path: audioPath, wasRendered }) => {
+                if (!audioPath) {
+                    setStatus("No audio media found in sequence", "error");
+                    hideProgress(); elBtnAnalyze.disabled = false; return;
+                }
+
+                var renderNote = wasRendered ? " (from rendered mixdown)" : " (from source file)";
+                updateProgress(25, "Running FFmpeg silence detection" + renderNote + "...");
+
+                var threshold   = computeThreshold(elAggressiveness.value);
+                var minDuration = parseInt(elMinDuration.value, 10) / 1000;
+
+                silenceDetector.detectSilence(audioPath, threshold, minDuration)
+                    .then((result) => {
+                        analysisResult = result;
+                        updateProgress(80, "Applying Clean Cut algorithm...");
+
+                        keepZones = computeCleanCutZones(
+                            result.silenceIntervals,
+                            result.mediaDuration,
+                            {
+                                paddingIn:       parseInt(elPaddingIn.value, 10)       / 1000,
+                                paddingOut:      parseInt(elPaddingOut.value, 10)      / 1000,
+                                minClipDuration: parseInt(elMinClipDuration.value, 10) / 1000,
+                                minGapDuration:  parseInt(elMinGapFill.value, 10)      / 1000,
+                            }
+                        );
+
+                        // Clean up temp WAV if we rendered one
+                        if (wasRendered && audioPath.includes("duckycut_mixdown_")) {
+                            try { nodeRequire("fs").unlinkSync(audioPath); } catch (e) {}
                         }
-                    );
 
-                    updateProgress(100, "Analysis complete!");
-                    showResults(result, keepZones);
-                    setStatus("Analysis complete — threshold: " + threshold + " dB", "success");
-                    hideProgress(); elBtnAnalyze.disabled = false;
-                })
-                .catch((err) => {
-                    setStatus("FFmpeg error: " + err.message, "error");
-                    hideProgress(); elBtnAnalyze.disabled = false;
-                });
+                        updateProgress(100, "Analysis complete!");
+                        showResults(result, keepZones, wasRendered);
+                        setStatus("Analysis complete — threshold: " + threshold + " dB" + renderNote, "success");
+                        hideProgress(); elBtnAnalyze.disabled = false;
+                    })
+                    .catch((err) => {
+                        setStatus("FFmpeg error: " + err.message, "error");
+                        hideProgress(); elBtnAnalyze.disabled = false;
+                    });
+            });
         });
     }
 
@@ -336,7 +420,7 @@
         if (cursor < totalDuration) rawSpeech.push([cursor, totalDuration]);
         if (rawSpeech.length === 0) return [[0, totalDuration]];
 
-        // Step 2: fill micro-gaps (don't cut tiny pauses)
+        // Step 2: fill micro-gaps
         var gapFilled = [rawSpeech[0].slice()];
         for (var j = 1; j < rawSpeech.length; j++) {
             var last    = gapFilled[gapFilled.length - 1];
@@ -345,7 +429,7 @@
             else gapFilled.push(rawSpeech[j].slice());
         }
 
-        // Step 3: drop micro-segments (discard noise bursts)
+        // Step 3: drop micro-segments
         var valid = gapFilled.filter((z) => (z[1] - z[0]) >= minClipDuration);
         if (valid.length === 0) return [[0, totalDuration]];
 
@@ -372,11 +456,15 @@
     }
 
     // ── Show Results ─────────────────────────────────────────────
-    function showResults(analysis, zones) {
+    function showResults(analysis, zones, wasRendered) {
         var totalKept = zones.reduce((sum, z) => sum + (z[1] - z[0]), 0);
         var timeSaved = analysis.mediaDuration - totalKept;
+        var renderNote = wasRendered
+            ? '<div class="result-line result-note"><span>Audio source:</span><span class="result-value">Rendered mixdown ✓</span></div>'
+            : '<div class="result-line result-note"><span>Audio source:</span><span class="result-value">Source file</span></div>';
 
         elResultsContent.innerHTML =
+            renderNote +
             '<div class="result-line"><span>Silence regions found:</span><span class="result-value">' + analysis.silenceCount    + '</span></div>' +
             '<div class="result-line"><span>Time saved:</span><span class="result-value">'            + formatTime(timeSaved)    + '</span></div>' +
             '<div class="result-line"><span>Keep zones:</span><span class="result-value">'            + zones.length             + '</span></div>' +
@@ -392,44 +480,66 @@
         if (!xmlGenerator) { setStatus("XML generator not loaded", "error"); return; }
 
         elBtnApply.disabled = true;
-        showProgress("Generating FCP7 XML...");
+        showProgress("Reading full sequence timeline...");
 
         Promise.all([
+            evalScript("getFullSequenceClips()"),
             evalScript("getSequenceSettings()"),
-            getMediaPath(),
             evalScript("getProjectPath()"),
-        ]).then((results) => {
-            var seqSettings, mediaPath, projectDir;
-            try   { seqSettings = JSON.parse(results[0]); } catch (e) { seqSettings = {}; }
-            mediaPath = results[1];
-            try { var pd = JSON.parse(results[2]); projectDir = pd.projectDir || null; }
-            catch (e) { projectDir = null; }
+        ]).then(([clipsRaw, settingsRaw, projRaw]) => {
+            // Always re-read clips in case something changed
+            try {
+                var parsed = JSON.parse(clipsRaw);
+                if (Array.isArray(parsed)) sequenceClips = parsed;
+            } catch (e) {}
+
+            var settings = seqSettings;
+            try {
+                var fresh = JSON.parse(settingsRaw);
+                if (!fresh.error) settings = fresh;
+            } catch (e) {}
+
+            var projectDir = null;
+            try { var pd = JSON.parse(projRaw); projectDir = pd.projectDir || null; } catch (e) {}
 
             if (!projectDir) {
                 setStatus("Save the project first", "error");
                 hideProgress(); elBtnApply.disabled = false; return;
             }
 
+            updateProgress(30, "Generating FCP7 XML...");
+
             var nPath       = nodeRequire("path");
-            var xmlFileName = sequenceInfo.name + "_duckycut_" + Date.now() + ".xml";
+            var xmlFileName = (sequenceInfo ? sequenceInfo.name : "Duckycut") + "_duckycut_" + Date.now() + ".xml";
             var outputPath  = nPath.join(projectDir, xmlFileName);
 
-            updateProgress(40, "Writing XML file...");
+            // Use actual sequence framerate — not hardcoded fallback
+            var fps = (settings && settings.framerate) ? settings.framerate
+                    : (sequenceInfo && sequenceInfo.framerate) ? sequenceInfo.framerate
+                    : 29.97;
+
+            var numAudioTracks = (settings && settings.audioTrackCount)
+                ? settings.audioTrackCount
+                : (sequenceInfo && sequenceInfo.audioTracks ? sequenceInfo.audioTracks.length : 1);
+
+            var numVideoTracks = (settings && settings.videoTrackCount)
+                ? settings.videoTrackCount
+                : (sequenceInfo && sequenceInfo.videoTracks ? sequenceInfo.videoTracks.length : 1);
 
             try {
                 xmlGenerator.generateFCP7XML({
-                    keepZones:        keepZones,
-                    mediaPath:        mediaPath,
-                    sequenceName:     sequenceInfo.name,
-                    framerate:        seqSettings.framerate       || 29.97,
-                    width:            seqSettings.width           || 1920,
-                    height:           seqSettings.height          || 1080,
-                    audioSampleRate:  seqSettings.audioSampleRate || 48000,
-                    durationSeconds:  seqSettings.durationSeconds || analysisResult.mediaDuration,
-                    outputPath:       outputPath,
-                    audioTrackCount:  sequenceInfo.audioTracks ? sequenceInfo.audioTracks.length : 1,
-                    // ← pass actual channel count from probe so the <file> declaration is correct
-                    audioChannelCount: probeResult ? probeResult.channelCount : (sequenceInfo.audioTracks ? sequenceInfo.audioTracks.length : 1),
+                    keepZones:         keepZones,
+                    sequenceClips:     sequenceClips,
+                    sequenceName:      sequenceInfo ? sequenceInfo.name : "Duckycut",
+                    framerate:         fps,
+                    width:             (settings && settings.width)           || 1920,
+                    height:            (settings && settings.height)          || 1080,
+                    audioSampleRate:   (settings && settings.audioSampleRate) || 48000,
+                    durationSeconds:   (settings && settings.durationSeconds) || (analysisResult && analysisResult.mediaDuration) || 0,
+                    outputPath:        outputPath,
+                    audioTrackCount:   numAudioTracks,
+                    videoTrackCount:   numVideoTracks,
+                    audioChannelCount: probeResult ? probeResult.channelCount : numAudioTracks,
                 });
 
                 updateProgress(70, "Importing XML into Premiere...");
@@ -440,7 +550,7 @@
                         var data = JSON.parse(result);
                         if (data.success) {
                             updateProgress(100, "Done!");
-                            setStatus("New sequence created: " + sequenceInfo.name + " [Duckycut]", "success");
+                            setStatus("New sequence created: " + (sequenceInfo ? sequenceInfo.name : "") + " [Duckycut]", "success");
                         } else {
                             setStatus("Import error: " + (data.message || "unknown"), "error");
                         }

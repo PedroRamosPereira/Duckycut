@@ -64,6 +64,14 @@ function getActiveSequenceInfo() {
             if (tbTicks > 0) fps = TICKS / tbTicks;
         } catch (e) {}
 
+        // ── NTSC detection & XML timebase ───────────────────────────
+        var isNTSC = false;
+        var ntscRates = [23.976, 29.97, 59.94];
+        for (var n = 0; n < ntscRates.length; n++) {
+            if (Math.abs(fps - ntscRates[n]) < 0.05) { isNTSC = true; break; }
+        }
+        var xmlTimebase = Math.round(fps);
+
         // ── Audio tracks ────────────────────────────────────────────
         var audioTracks = [];
         try {
@@ -98,6 +106,9 @@ function getActiveSequenceInfo() {
             name:            seqName,
             sequenceID:      seqId,
             framerate:       fps,
+            exactFps:        fps,
+            isNTSC:          isNTSC,
+            xmlTimebase:     xmlTimebase,
             durationSeconds: durationSeconds,
             audioTracks:     audioTracks,
             videoTracks:     videoTracks
@@ -400,12 +411,68 @@ function exportSequenceAudio(outputPath, extensionPath) {
         var seq = app.project.activeSequence;
         if (!seq) return '{"success":false,"error":"No active sequence"}';
 
-        var outNorm    = outputPath.replace(/\//g, "\\");
-        var presetPath = extensionPath.replace(/\//g, "\\") + "\\WAV.epr";
+        // ── Sanitise paths: strip file:/// protocol + decode %20 etc. ──
+        var cleanOutPath = decodeURI(outputPath).replace(/^file:\/{2,3}/i, "").replace(/\\/g, "/");
+        var cleanExtPath = decodeURI(extensionPath).replace(/^file:\/{2,3}/i, "").replace(/\\/g, "/");
 
-        var presetFile = new File(presetPath);
-        if (!presetFile.exists) {
-            return '{"success":false,"error":"WAV.epr not found at: ' + presetPath.replace(/\\/g, '\\\\') + '"}';
+        var outNorm = cleanOutPath.replace(/\//g, "\\");
+
+        // ── Locate WAV.epr preset: try multiple locations ──────────
+        var presetPath = "";
+        var candidates = [];
+
+        // 1. Bundled inside extension root
+        candidates.push(cleanExtPath.replace(/\//g, "\\") + "\\WAV.epr");
+
+        // 2. Inside /server subfolder of extension
+        candidates.push(cleanExtPath.replace(/\//g, "\\") + "\\server\\WAV.epr");
+
+        // 3. Inside /presets subfolder of extension
+        candidates.push(cleanExtPath.replace(/\//g, "\\") + "\\presets\\WAV.epr");
+
+        // 4. Adobe system presets (AME + Premiere, multiple years)
+        var years = ["2025", "2024", "2023", "2022"];
+        var bases = [
+            "C:\\Program Files\\Adobe\\Adobe Media Encoder ",
+            "C:\\Program Files\\Adobe\\Adobe Premiere Pro "
+        ];
+        for (var b = 0; b < bases.length; b++) {
+            for (var y = 0; y < years.length; y++) {
+                candidates.push(bases[b] + years[y] +
+                    "\\MediaIO\\systempresets\\58444341_4d635174\\WAV\\48kHz 16-bit.epr");
+            }
+        }
+
+        // Test each candidate
+        for (var c = 0; c < candidates.length; c++) {
+            var f = new File(candidates[c]);
+            if (f.exists) { presetPath = candidates[c]; break; }
+        }
+
+        // 5. Last resort: scan any .epr inside the AME WAV GUID folder
+        if (!presetPath) {
+            for (var b2 = 0; b2 < bases.length; b2++) {
+                for (var y2 = 0; y2 < years.length; y2++) {
+                    var wavFolder = new Folder(bases[b2] + years[y2] +
+                        "\\MediaIO\\systempresets\\58444341_4d635174\\WAV");
+                    if (wavFolder.exists) {
+                        var eprFiles = wavFolder.getFiles("*.epr");
+                        if (eprFiles.length > 0) {
+                            presetPath = eprFiles[0].fsName;
+                            break;
+                        }
+                    }
+                }
+                if (presetPath) break;
+            }
+        }
+
+        if (!presetPath) {
+            var tried = "";
+            for (var t = 0; t < candidates.length && t < 4; t++) {
+                tried += "\\n  " + candidates[t].replace(/\\/g, "\\\\");
+            }
+            return '{"success":false,"error":"WAV.epr not found. Tried:' + tried + '\\nPlace WAV.epr in the extension root: ' + cleanExtPath.replace(/\\/g, "\\\\") + '"}';
         }
 
         // ── Export ──────────────────────────────────────────────────
@@ -417,8 +484,8 @@ function exportSequenceAudio(outputPath, extensionPath) {
 
         return JSON.stringify({
             success: true,
-            path:    outputPath,
-            preset:  presetPath
+            path:    cleanOutPath,
+            preset:  presetPath.replace(/\\/g, "/")
         });
     } catch (e) {
         return '{"success":false,"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
@@ -470,6 +537,14 @@ function getSequenceSettings() {
             if (tbTicks > 0) fps = TICKS / tbTicks;
         } catch (e) {}
 
+        // ── NTSC detection & XML timebase ─────────────────────────
+        var isNTSC = false;
+        var ntscRates = [23.976, 29.97, 59.94];
+        for (var n = 0; n < ntscRates.length; n++) {
+            if (Math.abs(fps - ntscRates[n]) < 0.05) { isNTSC = true; break; }
+        }
+        var xmlTimebase = Math.round(fps);
+
         // ── Duration ──────────────────────────────────────────────
         var durationSeconds = 0;
         try { durationSeconds = seq.end.seconds; }
@@ -497,6 +572,9 @@ function getSequenceSettings() {
 
         return '{"name":"'     + seqName      + '",' +
                '"framerate":'  + fps           + ',' +
+               '"exactFps":'   + fps           + ',' +
+               '"isNTSC":'     + (isNTSC ? 'true' : 'false') + ',' +
+               '"xmlTimebase":' + xmlTimebase  + ',' +
                '"width":'      + width         + ',' +
                '"height":'     + height        + ',' +
                '"audioSampleRate":' + sampleRate + ',' +

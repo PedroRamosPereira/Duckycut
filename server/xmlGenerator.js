@@ -31,6 +31,9 @@ const path = require("path");
  * @param {number}                 opts.audioChannelCount - Source file channel count from FFmpeg probe
  * @param {number}                 opts.audioTrackCount   - Number of audio tracks in sequence
  * @param {number}                 opts.videoTrackCount   - Number of video tracks in sequence
+ * @param {number}                [opts.exactFps]         - Precise fractional FPS from Adobe ticks (e.g. 29.97002997)
+ * @param {boolean}              [opts.isNTSC]           - Whether the sequence is NTSC (from host)
+ * @param {number}               [opts.xmlTimebase]      - Integer timebase for XML tags (e.g. 30)
  */
 function generateFCP7XML(opts) {
     const {
@@ -48,10 +51,14 @@ function generateFCP7XML(opts) {
         videoTrackCount,
     } = opts;
 
-    const isNTSC   = [29.97, 23.976, 59.94].some((f) => Math.abs(framerate - f) < 0.05);
-    const timebase  = Math.round(framerate);
+    // Use exact values from host when available; fall back to deriving from framerate
+    const exactFps  = opts.exactFps || framerate;
+    const isNTSC    = (typeof opts.isNTSC === "boolean")
+        ? opts.isNTSC
+        : [29.97, 23.976, 59.94].some((f) => Math.abs(framerate - f) < 0.05);
+    const timebase  = opts.xmlTimebase || Math.round(framerate);
     const ntsc      = isNTSC ? "TRUE" : "FALSE";
-    const toFrames  = (s) => Math.round(s * framerate);
+    const toFrames  = (s) => Math.round(s * exactFps);
 
     // ── File registry: one <file> element per unique media path ──────
     const fileRegistry = {};  // mediaPath → file-N id
@@ -71,13 +78,15 @@ function generateFCP7XML(opts) {
         sequenceClips.forEach((c) => { if (c.mediaPath) getFileId(c.mediaPath); });
     }
 
-    // ── Map: for each keepZone, what is its output start frame? ─────
-    // keepZone[i] starts at outputOffsets[i] in the new timeline
+    // ── Pre-compute keepZone boundaries in frames (ONCE) ─────────────
+    // Converting each boundary exactly once eliminates double-rounding drift.
+    // outputOffsets[i] = frame where keepZone[i] starts on the NEW timeline.
+    const keepZonesF = keepZones.map(([ks, ke]) => [toFrames(ks), toFrames(ke)]);
     const outputOffsets = [];
     let runningOffset = 0;
-    for (const [ks, ke] of keepZones) {
+    for (const [ksF, keF] of keepZonesF) {
         outputOffsets.push(runningOffset);
-        runningOffset += toFrames(ke - ks);
+        runningOffset += (keF - ksF);   // duration = endFrame − startFrame, no re-rounding
     }
     const totalOutputFrames = runningOffset;
     const totalInputFrames  = toFrames(durationSeconds);
@@ -90,29 +99,31 @@ function generateFCP7XML(opts) {
      * (all in frames, relative to new timeline / source media)
      */
     function mapClipToOutput(clipOrigStart, clipOrigEnd, clipMediaIn) {
+        const cStartF = toFrames(clipOrigStart);
+        const cEndF   = toFrames(clipOrigEnd);
+        const cInF    = toFrames(clipMediaIn);
+
         const segments = [];
-        for (let zi = 0; zi < keepZones.length; zi++) {
-            const [kStart, kEnd] = keepZones[zi];
-            const kStartF = toFrames(kStart);
-            const kEndF   = toFrames(kEnd);
-            const cStartF = toFrames(clipOrigStart);
-            const cEndF   = toFrames(clipOrigEnd);
-            const cInF    = toFrames(clipMediaIn);
+        for (let zi = 0; zi < keepZonesF.length; zi++) {
+            const [kStartF, kEndF] = keepZonesF[zi];
 
             // Intersection of [kStartF, kEndF] and [cStartF, cEndF]
             const iStart = Math.max(kStartF, cStartF);
             const iEnd   = Math.min(kEndF,   cEndF);
             if (iStart >= iEnd) continue;
 
+            // Duration of this segment in frames
+            const segDur = iEnd - iStart;
+
             // Output position: offsetIntoKeepZone + outputOffset[zi]
             const offsetInZone = iStart - kStartF;
             const outStart = outputOffsets[zi] + offsetInZone;
-            const outEnd   = outStart + (iEnd - iStart);
+            const outEnd   = outStart + segDur;
 
             // Source media in/out: shift by how far into the clip this segment starts
             const segClipOffset = iStart - cStartF;
             const mediaIn  = cInF + segClipOffset;
-            const mediaOut = mediaIn + (iEnd - iStart);
+            const mediaOut = mediaIn + segDur;
 
             segments.push({ outStart, outEnd, mediaIn, mediaOut });
         }
@@ -157,16 +168,18 @@ function generateFCP7XML(opts) {
         for (const clip of clipsInTrack) {
             const fileId  = getFileId(clip.mediaPath);
             const segs    = mapClipToOutput(clip.start, clip.end, clip.mediaIn || 0);
-            const mediaDurFrames = toFrames(durationSeconds);
+            // FCP7 spec: <duration> = total source media length, NOT the trimmed segment
+            const fileDurFrames = totalInputFrames;
 
             for (const seg of segs) {
+                const segDur = seg.outEnd - seg.outStart;
                 const id = nextClipId("v" + ti);
                 trackItems += `
                         <clipitem id="${id}">
                             <masterclipid>${fileId || "masterclip-1"}</masterclipid>
                             <name>${escapeXml(clip.clipName || "")}</name>
                             <enabled>TRUE</enabled>
-                            <duration>${mediaDurFrames}</duration>
+                            <duration>${fileDurFrames}</duration>
                             <rate><timebase>${timebase}</timebase><ntsc>${ntsc}</ntsc></rate>
                             <start>${seg.outStart}</start>
                             <end>${seg.outEnd}</end>
@@ -198,20 +211,22 @@ function generateFCP7XML(opts) {
         for (const clip of clipsInTrack) {
             const fileId  = getFileId(clip.mediaPath);
             const segs    = mapClipToOutput(clip.start, clip.end, clip.mediaIn || 0);
-            const mediaDurFrames = toFrames(durationSeconds);
+            // FCP7 spec: <duration> = total source media length, NOT the trimmed segment
+            const fileDurFrames = totalInputFrames;
 
-            // Source channel: for stereo files track 0→ch1, track 1→ch2, etc.
-            // Cap to actual file channels to avoid out-of-bounds
+            // Source channel: audio track 0 → ch 1, track 1 → ch 2, etc.
+            // Cap to actual file channels so mono files don't break
             const srcChannel = Math.min(ti + 1, numChannels);
 
             for (const seg of segs) {
+                const segDur = seg.outEnd - seg.outStart;
                 const id = nextClipId("a" + ti);
                 trackItems += `
                         <clipitem id="${id}">
                             <masterclipid>${fileId || "masterclip-1"}</masterclipid>
                             <name>${escapeXml(clip.clipName || "")}</name>
                             <enabled>TRUE</enabled>
-                            <duration>${mediaDurFrames}</duration>
+                            <duration>${fileDurFrames}</duration>
                             <rate><timebase>${timebase}</timebase><ntsc>${ntsc}</ntsc></rate>
                             <start>${seg.outStart}</start>
                             <end>${seg.outEnd}</end>

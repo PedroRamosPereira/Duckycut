@@ -89,6 +89,12 @@
     const elMinClipVal        = document.getElementById("minClipVal");
     const elMinGapFill        = document.getElementById("minGapFill");
     const elMinGapFillVal     = document.getElementById("minGapFillVal");
+    const elBtnLinkPadding    = document.getElementById("btnLinkPadding");
+    const elBtnAdvancedToggle = document.getElementById("btnAdvancedToggle");
+    const elAdvancedSettings  = document.getElementById("advancedSettings");
+    const elBtnSavePreset     = document.getElementById("btnSavePreset");
+    const elBtnLoadPreset     = document.getElementById("btnLoadPreset");
+    const elPresetFileInput   = document.getElementById("presetFileInput");
     const elDeleteSilence     = document.getElementById("deleteSilence");
     const elTargetTrack       = document.getElementById("targetTrack");
     const elBtnAnalyze        = document.getElementById("btnAnalyze");
@@ -107,6 +113,7 @@
     let keepZones       = null;
     let probeResult     = null;   // { meanVolume, maxVolume, channelCount }
     let seqSettings     = null;   // from getSequenceSettings()
+    let paddingLinked   = false;  // whether Padding In/Out are synced
 
     // ── Init ─────────────────────────────────────────────────────
     function init() {
@@ -129,9 +136,17 @@
         });
         elPaddingIn.addEventListener("input", () => {
             elPaddingInVal.textContent = elPaddingIn.value + " ms";
+            if (paddingLinked) {
+                elPaddingOut.value = elPaddingIn.value;
+                elPaddingOutVal.textContent = elPaddingIn.value + " ms";
+            }
         });
         elPaddingOut.addEventListener("input", () => {
             elPaddingOutVal.textContent = elPaddingOut.value + " ms";
+            if (paddingLinked) {
+                elPaddingIn.value = elPaddingOut.value;
+                elPaddingInVal.textContent = elPaddingOut.value + " ms";
+            }
         });
         elMinClipDuration.addEventListener("input", () => {
             elMinClipVal.textContent = elMinClipDuration.value + " ms";
@@ -167,6 +182,137 @@
         elBtnProbe.addEventListener("click", runProbe);
         elBtnAnalyze.addEventListener("click", runAnalysis);
         elBtnApply.addEventListener("click", applyCuts);
+        elBtnLinkPadding.addEventListener("click", togglePaddingLink);
+        elBtnAdvancedToggle.addEventListener("click", toggleAdvanced);
+        elBtnSavePreset.addEventListener("click", savePreset);
+        elBtnLoadPreset.addEventListener("click", () => elPresetFileInput.click());
+        elPresetFileInput.addEventListener("change", loadPreset);
+    }
+
+    function toggleAdvanced() {
+        var expanded = elBtnAdvancedToggle.classList.toggle("expanded");
+        elAdvancedSettings.classList.toggle("expanded", expanded);
+    }
+
+    // ── Padding Link ─────────────────────────────────────────────
+    function togglePaddingLink() {
+        paddingLinked = !paddingLinked;
+        elBtnLinkPadding.classList.toggle("active", paddingLinked);
+        elBtnLinkPadding.title = paddingLinked
+            ? "Padding values are linked — click to unlink"
+            : "Link padding values";
+
+        if (paddingLinked) {
+            // On link: bottom (Padding Out) immediately copies top (Padding In)
+            elPaddingOut.value          = elPaddingIn.value;
+            elPaddingOutVal.textContent = elPaddingIn.value + " ms";
+        }
+    }
+
+    // ── Presets ───────────────────────────────────────────────────
+    function gatherSettings() {
+        return {
+            duckycut_preset: true,
+            version: 1,
+            aggressiveness:  parseInt(elAggressiveness.value, 10),
+            minDuration:     parseInt(elMinDuration.value, 10),
+            paddingIn:       parseInt(elPaddingIn.value, 10),
+            paddingOut:      parseInt(elPaddingOut.value, 10),
+            paddingLinked:   paddingLinked,
+            minClipDuration: parseInt(elMinClipDuration.value, 10),
+            minGapFill:      parseInt(elMinGapFill.value, 10),
+            deleteSilence:   elDeleteSilence.checked,
+        };
+    }
+
+    function applySettings(s) {
+        if (s.aggressiveness != null)  { elAggressiveness.value = s.aggressiveness; elAggressivenessVal.textContent = s.aggressiveness; updateAggroHint(); }
+        if (s.minDuration != null)     { elMinDuration.value = s.minDuration; elMinDurationVal.textContent = s.minDuration + " ms"; }
+        if (s.paddingIn != null)       { elPaddingIn.value = s.paddingIn; elPaddingInVal.textContent = s.paddingIn + " ms"; }
+        if (s.paddingOut != null)      { elPaddingOut.value = s.paddingOut; elPaddingOutVal.textContent = s.paddingOut + " ms"; }
+        if (s.minClipDuration != null) { elMinClipDuration.value = s.minClipDuration; elMinClipVal.textContent = s.minClipDuration + " ms"; }
+        if (s.minGapFill != null)      { elMinGapFill.value = s.minGapFill; elMinGapFillVal.textContent = s.minGapFill + " ms"; }
+        if (s.deleteSilence != null)   { elDeleteSilence.checked = s.deleteSilence; }
+        if (s.paddingLinked != null && s.paddingLinked !== paddingLinked) { togglePaddingLink(); }
+    }
+
+    function savePreset() {
+        if (!nodeRequire) { setStatus("Node.js not available — cannot save", "error"); return; }
+
+        var settings = gatherSettings();
+        var json = JSON.stringify(settings, null, 2);
+        var fileName = "duckycut_preset_" + Date.now() + ".json";
+
+        // Save next to the Premiere project file, or fallback to user Desktop
+        evalScript("getProjectPath()").then(function (r) {
+            var saveDir = null;
+            try { var pd = JSON.parse(r); saveDir = pd.projectDir || null; } catch (e) {}
+
+            if (!saveDir) {
+                try { saveDir = nodeRequire("os").homedir() + "/Desktop"; } catch (e) {}
+            }
+            if (!saveDir) { setStatus("Could not determine save location", "error"); return; }
+
+            var nPath = nodeRequire("path");
+            var nFs   = nodeRequire("fs");
+            var fullPath = nPath.join(saveDir.replace(/\//g, nPath.sep), fileName);
+
+            try {
+                nFs.writeFileSync(fullPath, json, "utf8");
+                setStatusWithPath("Saved: ", fullPath, "success");
+            } catch (err) {
+                setStatus("Save error: " + err.message, "error");
+            }
+        });
+    }
+
+    function setStatusWithPath(prefix, fullPath, type) {
+        elStatusBar.className = "status-bar" + (type ? " " + type : "");
+        elStatusBar.textContent = "";
+
+        var prefixNode = document.createTextNode(prefix);
+        var link = document.createElement("a");
+        link.className = "status-link";
+        link.href = "#";
+        link.textContent = fullPath.replace(/\\/g, "/");
+        link.title = "Click to reveal in file explorer";
+        link.addEventListener("click", function (ev) {
+            ev.preventDefault();
+            revealInExplorer(fullPath);
+        });
+
+        elStatusBar.appendChild(prefixNode);
+        elStatusBar.appendChild(link);
+    }
+
+    function revealInExplorer(fullPath) {
+        if (!nodeRequire) { setStatus("Node.js not available", "error"); return; }
+        try {
+            var child = nodeRequire("child_process");
+            var nativePath = fullPath.replace(/\//g, "\\");
+            // Windows: /select, highlights the file in Explorer
+            child.exec('explorer /select,"' + nativePath + '"');
+        } catch (err) {
+            setStatus("Could not open explorer: " + err.message, "error");
+        }
+    }
+
+    function loadPreset(e) {
+        var file = e.target.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function (ev) {
+            try {
+                var s = JSON.parse(ev.target.result);
+                if (!s.duckycut_preset) { setStatus("Invalid preset file", "error"); return; }
+                applySettings(s);
+                setStatus("Preset loaded: " + file.name, "success");
+            } catch (err) {
+                setStatus("Failed to parse preset: " + err.message, "error");
+            }
+        };
+        reader.readAsText(file);
+        elPresetFileInput.value = "";
     }
 
     function evalScript(script) {
@@ -396,7 +542,14 @@
     }
 
     // ══════════════════════════════════════════════════════════════
-    //  CLEAN CUT ALGORITHM  (5-step)
+    //  CLEAN CUT ALGORITHM  (6-step, corrected order)
+    //
+    //  Order matters:  Invert → Fill Gaps → Pad → Merge → Drop → Clamp
+    //
+    //  Old bug: "drop micro-segments" ran BEFORE padding, so short
+    //  but legitimate speech fragments were killed before the safety
+    //  margin (padding) could save them.  Now drop runs AFTER padding
+    //  and merge, so the final duration includes the added margins.
     // ══════════════════════════════════════════════════════════════
     function computeCleanCutZones(silenceIntervals, totalDuration, opts) {
         var paddingIn       = opts.paddingIn       || 0;
@@ -406,7 +559,7 @@
 
         if (!silenceIntervals || silenceIntervals.length === 0) return [[0, totalDuration]];
 
-        // Step 1: invert silence → raw speech zones
+        // Step 0: invert silence intervals → raw speech (keep) zones
         var rawSpeech = [];
         var cursor = 0;
         for (var i = 0; i < silenceIntervals.length; i++) {
@@ -418,27 +571,42 @@
         if (cursor < totalDuration) rawSpeech.push([cursor, totalDuration]);
         if (rawSpeech.length === 0) return [[0, totalDuration]];
 
-        // Step 2: fill micro-gaps
+        // Step 1: fill small gaps — merge zones separated by ≤ minGapDuration
         var gapFilled = [rawSpeech[0].slice()];
         for (var j = 1; j < rawSpeech.length; j++) {
             var last    = gapFilled[gapFilled.length - 1];
             var gapSize = rawSpeech[j][0] - last[1];
-            if (gapSize < minGapDuration) last[1] = rawSpeech[j][1];
+            if (gapSize <= minGapDuration) last[1] = rawSpeech[j][1];
             else gapFilled.push(rawSpeech[j].slice());
         }
 
-        // Step 3: drop micro-segments
-        var valid = gapFilled.filter((z) => (z[1] - z[0]) >= minClipDuration);
+        // Step 2: asymmetric padding (expand each zone)
+        var padded = gapFilled.map(function (z) {
+            return [z[0] - paddingIn, z[1] + paddingOut];
+        });
+
+        // Step 3: merge overlaps created by padding expansion
+        var merged = mergeOverlappingIntervals(padded);
+
+        // Step 4: drop short clips — NOW, after padding has had its chance
+        var valid = merged.filter(function (z) { return (z[1] - z[0]) >= minClipDuration; });
         if (valid.length === 0) return [[0, totalDuration]];
 
-        // Step 4: asymmetric padding
-        var padded = valid.map((z) => [
-            Math.max(0,             z[0] - paddingIn),
-            Math.min(totalDuration, z[1] + paddingOut),
-        ]);
+        // Step 5: clamp boundaries to [0, totalDuration]
+        for (var k = 0; k < valid.length; k++) {
+            if (valid[k][0] < 0)             valid[k][0] = 0;
+            if (valid[k][1] > totalDuration) valid[k][1] = totalDuration;
+        }
 
-        // Step 5: merge overlaps
-        return mergeOverlappingIntervals(padded);
+        // Step 6: final merge + re-filter after clamp
+        //  Clamping can make adjacent zones touch at 0 or totalDuration,
+        //  and can shrink zones below minClipDuration.
+        var final = mergeOverlappingIntervals(valid);
+        if (minClipDuration > 0) {
+            final = final.filter(function (z) { return (z[1] - z[0]) >= minClipDuration; });
+        }
+
+        return final.length > 0 ? final : [[0, totalDuration]];
     }
 
     function mergeOverlappingIntervals(arr) {
@@ -516,6 +684,11 @@
                     : (sequenceInfo && sequenceInfo.framerate) ? sequenceInfo.framerate
                     : 29.97;
 
+            // Exact framerate fields for precise frame math (from Adobe ticks)
+            var exactFps    = (settings && settings.exactFps) || fps;
+            var isNTSC      = (settings && typeof settings.isNTSC !== "undefined") ? settings.isNTSC : false;
+            var xmlTimebase = (settings && settings.xmlTimebase) || Math.round(fps);
+
             var numAudioTracks = (settings && settings.audioTrackCount)
                 ? settings.audioTrackCount
                 : (sequenceInfo && sequenceInfo.audioTracks ? sequenceInfo.audioTracks.length : 1);
@@ -530,6 +703,9 @@
                     sequenceClips:     sequenceClips,
                     sequenceName:      sequenceInfo ? sequenceInfo.name : "Duckycut",
                     framerate:         fps,
+                    exactFps:          exactFps,
+                    isNTSC:            isNTSC,
+                    xmlTimebase:       xmlTimebase,
                     width:             (settings && settings.width)           || 1920,
                     height:            (settings && settings.height)          || 1080,
                     audioSampleRate:   (settings && settings.audioSampleRate) || 48000,

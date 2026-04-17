@@ -248,80 +248,6 @@ function getFullSequenceClips() {
 }
 
 /**
- * Exports a mixdown of specified audio tracks to a WAV file using AME / encoder.
- * Falls back to returning the raw media path if export is not available.
- *
- * @param {string} audioTrackIndicesJSON - JSON array of track indices to include, e.g. "[0,1]"
- * @param {string} outputWavPath         - Where to write the rendered WAV
- */
-function exportAudioMixdown(audioTrackIndicesJSON, outputWavPath) {
-    try {
-        var seq = app.project.activeSequence;
-        if (!seq) return '{"error":"No active sequence"}';
-
-        // Try to use the Premiere encoder queue (requires AME)
-        try {
-            // Mute tracks we do NOT want included
-            var trackIndices = JSON.parse(audioTrackIndicesJSON);
-            var numA = seq.audioTracks.numTracks;
-            var originalMutes = [];
-            for (var i = 0; i < numA; i++) {
-                var muted = false;
-                try { muted = seq.audioTracks[i].isMuted(); } catch(e) {}
-                originalMutes.push(muted);
-                var shouldBeIncluded = false;
-                for (var k = 0; k < trackIndices.length; k++) {
-                    if (trackIndices[k] === i) { shouldBeIncluded = true; break; }
-                }
-                // Mute tracks not in selection
-                try {
-                    if (!shouldBeIncluded) seq.audioTracks[i].setMute(true);
-                    else seq.audioTracks[i].setMute(false);
-                } catch(e) {}
-            }
-
-            // Export via encoder
-            var encoder = app.encoder;
-            encoder.launchEncoder();
-
-            var outputPath = outputWavPath.replace(/\//g, "\\\\");
-            var exportResult = encoder.exportSequence(
-                seq,
-                outputPath,
-                "audio-only",   // preset hint — AME resolves actual preset
-                app.encoder.ENCODE_IN_TO_OUT
-            );
-
-            // Restore mute states
-            for (var r = 0; r < numA; r++) {
-                try { seq.audioTracks[r].setMute(originalMutes[r]); } catch(e) {}
-            }
-
-            return JSON.stringify({ success: true, path: outputWavPath, method: "encoder" });
-        } catch (encErr) {
-            // AME not available — return the source media path so caller falls back to FFmpeg on original
-            var fallbackPath = "";
-            try {
-                var ft = seq.audioTracks[0];
-                if (ft && ft.clips.numItems > 0) {
-                    var fp = ft.clips[0].projectItem.getMediaPath();
-                    if (fp) fallbackPath = fp.replace(/\\/g, "/");
-                }
-            } catch(e) {}
-
-            return JSON.stringify({
-                success:  false,
-                fallback: true,
-                path:     fallbackPath,
-                error:    encErr.toString()
-            });
-        }
-    } catch (e) {
-        return '{"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
-    }
-}
-
-/**
  * Gets the file path of the first clip in a given audio track.
  */
 function getAllMediaPaths() {
@@ -398,10 +324,15 @@ function getAllMediaPaths() {
 }
 
 /**
- * Exports the active sequence audio (all tracks, with effects) to a WAV file.
+ * Exports the active sequence audio (all tracks, with effects) to a WAV file
+ * by queuing a render in Adobe Media Encoder (AME).
  *
- * Uses exportAsMediaDirect() which renders synchronously through Premiere's
- * own audio engine — preserving volume, EQ, and all audio effects.
+ * Why AME (not exportAsMediaDirect): AME runs out-of-process, so Premiere's UI
+ * stays responsive while the render happens — matches fireCut's behaviour. The
+ * panel polls for the output WAV on disk to know when the render is done.
+ *
+ * Range is ENCODE_ENTIRE (not ENCODE_IN_TO_OUT) so existing sequence In/Out
+ * marks don't silently truncate the export and shift every detected timestamp.
  *
  * @param {string} outputPath    - Destination WAV path (forward slashes OK)
  * @param {string} extensionPath - Root directory of the CEP extension
@@ -417,73 +348,152 @@ function exportSequenceAudio(outputPath, extensionPath) {
 
         var outNorm = cleanOutPath.replace(/\//g, "\\");
 
-        // ── Locate WAV.epr preset: try multiple locations ──────────
+        // ── Locate a WAV encoder preset (.epr) ─────────────────────
+        // Adobe moves preset GUIDs and filenames between versions:
+        //   2022-2025: systempresets\58444341_4d635174\WAV\48kHz 16-bit.epr
+        //   2026+    : systempresets\3F3F3F3F_57415645\Waveform Audio 48kHz 16-bit.epr
+        //   Premiere : Settings\EncoderPresets\Wave48mono16.epr
+        // Strategy: try hard-coded known paths first, then fall back to a
+        // recursive scan with diagnostic trace so failures are debuggable.
         var presetPath = "";
-        var candidates = [];
+        var triedPaths = [];
+        var trace = [];
 
-        // 1. Bundled inside extension root
-        candidates.push(cleanExtPath.replace(/\//g, "\\") + "\\WAV.epr");
+        function isFolder(f) {
+            try { return f && typeof f.getFiles === "function"; } catch (e) { return false; }
+        }
 
-        // 2. Inside /server subfolder of extension
-        candidates.push(cleanExtPath.replace(/\//g, "\\") + "\\server\\WAV.epr");
-
-        // 3. Inside /presets subfolder of extension
-        candidates.push(cleanExtPath.replace(/\//g, "\\") + "\\presets\\WAV.epr");
-
-        // 4. Adobe system presets (AME + Premiere, multiple years)
-        var years = ["2025", "2024", "2023", "2022"];
-        var bases = [
-            "C:\\Program Files\\Adobe\\Adobe Media Encoder ",
-            "C:\\Program Files\\Adobe\\Adobe Premiere Pro "
+        // 1. Bundled inside extension root / server / presets
+        var extRootBack = cleanExtPath.replace(/\//g, "\\");
+        var bundled = [
+            extRootBack + "\\WAV.epr",
+            extRootBack + "\\server\\WAV.epr",
+            extRootBack + "\\presets\\WAV.epr"
         ];
-        for (var b = 0; b < bases.length; b++) {
-            for (var y = 0; y < years.length; y++) {
-                candidates.push(bases[b] + years[y] +
-                    "\\MediaIO\\systempresets\\58444341_4d635174\\WAV\\48kHz 16-bit.epr");
+        for (var bc = 0; bc < bundled.length; bc++) {
+            triedPaths.push(bundled[bc]);
+            var bf = new File(bundled[bc]);
+            if (bf.exists) { presetPath = bundled[bc]; break; }
+        }
+
+        // 2. Known concrete paths across years + GUIDs
+        if (!presetPath) {
+            var years = ["2026", "2025", "2024", "2023", "2022"];
+            var bases = [
+                "C:\\Program Files\\Adobe\\Adobe Media Encoder ",
+                "C:\\Program Files\\Adobe\\Adobe Premiere Pro "
+            ];
+            var relPaths = [
+                // Newer (2026+) layout
+                "\\MediaIO\\systempresets\\3F3F3F3F_57415645\\Waveform Audio 48kHz 16-bit.epr",
+                // Older (2022-2025) layout
+                "\\MediaIO\\systempresets\\58444341_4d635174\\WAV\\48kHz 16-bit.epr",
+                // Premiere user-visible presets
+                "\\Settings\\EncoderPresets\\Wave48mono16.epr"
+            ];
+            for (var bi = 0; bi < bases.length && !presetPath; bi++) {
+                for (var yi = 0; yi < years.length && !presetPath; yi++) {
+                    for (var ri = 0; ri < relPaths.length; ri++) {
+                        var candidate = bases[bi] + years[yi] + relPaths[ri];
+                        triedPaths.push(candidate);
+                        var cf = new File(candidate);
+                        if (cf.exists) { presetPath = candidate; break; }
+                    }
+                }
             }
         }
 
-        // Test each candidate
-        for (var c = 0; c < candidates.length; c++) {
-            var f = new File(candidates[c]);
-            if (f.exists) { presetPath = candidates[c]; break; }
-        }
-
-        // 5. Last resort: scan any .epr inside the AME WAV GUID folder
+        // 3. Recursive scan with diagnostic trace
         if (!presetPath) {
-            for (var b2 = 0; b2 < bases.length; b2++) {
-                for (var y2 = 0; y2 < years.length; y2++) {
-                    var wavFolder = new Folder(bases[b2] + years[y2] +
-                        "\\MediaIO\\systempresets\\58444341_4d635174\\WAV");
-                    if (wavFolder.exists) {
-                        var eprFiles = wavFolder.getFiles("*.epr");
-                        if (eprFiles.length > 0) {
-                            presetPath = eprFiles[0].fsName;
-                            break;
+            var adobeRoot = new Folder("C:\\Program Files\\Adobe");
+            trace.push("adobeRoot=" + adobeRoot.fsName + " exists=" + adobeRoot.exists);
+            if (adobeRoot.exists) {
+                var adobeApps = adobeRoot.getFiles();
+                trace.push("adobeApps.count=" + (adobeApps ? adobeApps.length : -1));
+                for (var ai = 0; ai < adobeApps.length && !presetPath; ai++) {
+                    var appDir = adobeApps[ai];
+                    if (!isFolder(appDir)) { trace.push("skip[" + ai + "] not-folder"); continue; }
+                    if (!/^Adobe (Media Encoder|Premiere Pro)/i.test(appDir.name)) continue;
+                    trace.push("enter " + appDir.name);
+
+                    var sysRoot = new Folder(appDir.fsName + "\\MediaIO\\systempresets");
+                    trace.push("  sysRoot.exists=" + sysRoot.exists);
+                    if (sysRoot.exists) {
+                        var guidDirs = sysRoot.getFiles();
+                        trace.push("  guidDirs=" + (guidDirs ? guidDirs.length : -1));
+                        var eprSample = [];
+                        for (var gi = 0; gi < guidDirs.length && !presetPath; gi++) {
+                            var gd = guidDirs[gi];
+                            if (!isFolder(gd)) continue;
+                            var eprs = gd.getFiles("*.epr");
+                            for (var ei = 0; ei < eprs.length; ei++) {
+                                if (eprSample.length < 8) eprSample.push(eprs[ei].name);
+                                if (/wav/i.test(eprs[ei].name)) {
+                                    presetPath = eprs[ei].fsName;
+                                    break;
+                                }
+                            }
+                        }
+                        trace.push("  epr sample=[" + eprSample.join(" | ") + "]");
+                    }
+
+                    if (!presetPath) {
+                        var userPresets = new Folder(appDir.fsName + "\\Settings\\EncoderPresets");
+                        trace.push("  userPresets.exists=" + userPresets.exists);
+                        if (userPresets.exists) {
+                            var uprs = userPresets.getFiles("*.epr");
+                            for (var ui = 0; ui < uprs.length; ui++) {
+                                if (/wav/i.test(uprs[ui].name)) {
+                                    presetPath = uprs[ui].fsName;
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
-                if (presetPath) break;
             }
         }
 
         if (!presetPath) {
-            var tried = "";
-            for (var t = 0; t < candidates.length && t < 4; t++) {
-                tried += "\\n  " + candidates[t].replace(/\\/g, "\\\\");
+            var msg = "No WAV .epr preset found.\\n\\nTried direct paths:";
+            for (var tp = 0; tp < triedPaths.length; tp++) {
+                msg += "\\n  " + triedPaths[tp].replace(/\\/g, "\\\\");
             }
-            return '{"success":false,"error":"WAV.epr not found. Tried:' + tried + '\\nPlace WAV.epr in the extension root: ' + cleanExtPath.replace(/\\/g, "\\\\") + '"}';
+            msg += "\\n\\nScan trace:";
+            for (var tr = 0; tr < trace.length; tr++) {
+                msg += "\\n  " + trace[tr].replace(/\\/g, "\\\\").replace(/"/g, "'");
+            }
+            return '{"success":false,"error":"' + msg + '"}';
         }
 
-        // ── Export ──────────────────────────────────────────────────
-        seq.exportAsMediaDirect(
-            outNorm,
-            presetPath,
-            app.encoder.ENCODE_IN_TO_OUT
-        );
+        // ── Queue render through Adobe Media Encoder ────────────────
+        // encodeSequence(sequence, outputPath, presetPath,
+        //                encodeType[0=ENTIRE,1=IN_TO_OUT,2=WORKAREA],
+        //                removeUponCompletion[0|1], startImmediately[0|1])
+        try { app.encoder.launchEncoder(); } catch (eLaunch) {}
+
+        var jobID = "";
+        try {
+            jobID = app.encoder.encodeSequence(
+                seq,
+                outNorm,
+                presetPath,
+                0,   // ENCODE_ENTIRE — ignore any In/Out marks on the sequence
+                1,   // remove job from AME queue after it completes
+                1    // start batch immediately
+            );
+        } catch (encErr) {
+            return '{"success":false,"error":"encodeSequence failed: ' + encErr.toString().replace(/"/g, '\\"') + '"}';
+        }
+
+        // Defensive: on some PPro versions encodeSequence queues but doesn't
+        // start the batch unless startBatch() is called explicitly.
+        try { app.encoder.startBatch(); } catch (eStart) {}
 
         return JSON.stringify({
             success: true,
+            queued:  true,
+            jobID:   String(jobID || ""),
             path:    cleanOutPath,
             preset:  presetPath.replace(/\\/g, "/")
         });

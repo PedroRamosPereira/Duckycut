@@ -447,7 +447,7 @@
                 var tempWav = (os2.tmpdir() + "/duckycut_temp_mixdown_" + Date.now() + ".wav")
                                 .replace(/\\/g, "/");
 
-                updateProgress(15, "Exporting sequence audio via Premiere...");
+                updateProgress(15, "Queuing sequence render in Adobe Media Encoder...");
 
                 var extensionRoot = csInterface.getSystemPath(SystemPath.EXTENSION)
                                         .replace(/\\/g, "/");
@@ -463,29 +463,72 @@
                             return;
                         }
 
-                        // ── Poll until the WAV file appears on disk ──
-                        var pollInterval = 500;   // ms
-                        var pollTimeout  = 120000; // 2 min max
-                        var elapsed      = 0;
+                        // ── Wait for AME to finish writing the WAV ──
+                        // Two-phase poll: first wait for file to appear, then
+                        // wait for its size to be stable for N consecutive
+                        // samples (AME keeps the handle open while encoding).
+                        // Reading too early → FFmpeg EACCES (exit -13).
+                        var pollInterval   = 500;    // ms
+                        var pollTimeout    = 180000; // 3 min max total
+                        var stableSampleMs = 300;
+                        var stableNeeded   = 4;      // ~1.2s of unchanged size
+                        var elapsed        = 0;
 
                         function waitForFile() {
                             if (fs2.existsSync(tempWav)) {
-                                // Small extra wait to ensure file is fully written
-                                setTimeout(function () { runDetection(tempWav, true); }, 300);
+                                waitForStableSize();
                                 return;
                             }
                             elapsed += pollInterval;
                             if (elapsed >= pollTimeout) {
-                                setStatus("Timeout: mixdown file not found after 2 min", "error");
+                                setStatus("Timeout: AME didn't produce the WAV in 3 min", "error");
                                 hideProgress(); elBtnAnalyze.disabled = false;
                                 return;
                             }
                             updateProgress(
-                                15 + Math.min(10, Math.round(elapsed / pollTimeout * 10)),
-                                "Waiting for Premiere to finish rendering..."
+                                15 + Math.min(8, Math.round(elapsed / pollTimeout * 8)),
+                                "Waiting for Adobe Media Encoder to start..."
                             );
                             setTimeout(waitForFile, pollInterval);
                         }
+
+                        function waitForStableSize() {
+                            var lastSize    = -1;
+                            var stableCount = 0;
+
+                            function sample() {
+                                var size = -1;
+                                try { size = fs2.statSync(tempWav).size; } catch (e) {}
+
+                                if (size > 0 && size === lastSize) {
+                                    stableCount++;
+                                    if (stableCount >= stableNeeded) {
+                                        runDetection(tempWav, true);
+                                        return;
+                                    }
+                                } else {
+                                    stableCount = 0;
+                                }
+                                lastSize = size;
+
+                                elapsed += stableSampleMs;
+                                if (elapsed >= pollTimeout) {
+                                    setStatus("Timeout waiting for AME render to finish", "error");
+                                    hideProgress(); elBtnAnalyze.disabled = false;
+                                    return;
+                                }
+
+                                var sizeMB = size > 0 ? (Math.round(size / 1024 / 1024 * 10) / 10) : 0;
+                                updateProgress(
+                                    23 + Math.min(2, stableCount),
+                                    "Rendering in Adobe Media Encoder... " +
+                                        (sizeMB > 0 ? sizeMB + " MB" : "")
+                                );
+                                setTimeout(sample, stableSampleMs);
+                            }
+                            sample();
+                        }
+
                         waitForFile();
                     });
             } else {

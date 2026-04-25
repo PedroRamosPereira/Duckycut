@@ -603,19 +603,22 @@ function getSequenceSettings() {
         }
 
         try { numAudioTracks = seq.audioTracks.numTracks; } catch(e) {}
+        var numVideoTracks = 0;
         try { numVideoTracks = seq.videoTracks.numTracks; } catch(e) {}
 
-        return '{"name":"'     + seqName      + '",' +
-               '"framerate":'  + fps           + ',' +
-               '"exactFps":'   + fps           + ',' +
-               '"isNTSC":'     + (isNTSC ? 'true' : 'false') + ',' +
-               '"xmlTimebase":' + xmlTimebase  + ',' +
-               '"width":'      + width         + ',' +
-               '"height":'     + height        + ',' +
-               '"audioSampleRate":' + sampleRate + ',' +
-               '"audioTrackCount":' + numAudioTracks + ',' +
-               '"videoTrackCount":' + numVideoTracks + ',' +
-               '"durationSeconds":' + durationSeconds + '}';
+        return JSON.stringify({
+            name:            seqName,
+            framerate:       fps,
+            exactFps:        fps,
+            isNTSC:          isNTSC,
+            xmlTimebase:     xmlTimebase,
+            width:           width,
+            height:          height,
+            audioSampleRate: sampleRate,
+            audioTrackCount: numAudioTracks,
+            videoTrackCount: numVideoTracks,
+            durationSeconds: durationSeconds
+        });
     } catch (e) {
         return '{"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
     }
@@ -677,11 +680,15 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                 continue;
             }
 
+            // Resync regular API after QE DOM razor — without this, clips[vci].start
+            // may still reflect pre-razor geometry and _clipFullyInside never matches.
+            try { $.sleep(50); } catch(eSleep) {}
+            try { seq = app.project.activeSequence; } catch(eResync) {}
+
             try {
                 for (var vt = 0; vt < seq.videoTracks.numTracks; vt++) {
                     var vTrack = seq.videoTracks[vt];
-                    var nVC = 0; try { nVC = vTrack.clips.numItems; } catch(eN) {}
-                    for (var vci = nVC - 1; vci >= 0; vci--) {
+                    for (var vci = vTrack.clips.numItems - 1; vci >= 0; vci--) {
                         try {
                             var vClip = vTrack.clips[vci];
                             if (!vClip) continue;
@@ -696,8 +703,7 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                 }
                 for (var at = 0; at < seq.audioTracks.numTracks; at++) {
                     var aTrack = seq.audioTracks[at];
-                    var nAC = 0; try { nAC = aTrack.clips.numItems; } catch(eN2) {}
-                    for (var aci = nAC - 1; aci >= 0; aci--) {
+                    for (var aci = aTrack.clips.numItems - 1; aci >= 0; aci--) {
                         try {
                             var aClip = aTrack.clips[aci];
                             if (!aClip) continue;
@@ -729,6 +735,69 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         }
         result += '}';
         return result;
+    } catch (e) {
+        return '{"success":false,"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
+    }
+}
+
+function muteAudioTracks(selectedIndicesJson) {
+    try {
+        var seq = app.project.activeSequence;
+        if (!seq) return '{"success":false,"error":"No active sequence"}';
+
+        var selectedIndices = [];
+        try { selectedIndices = eval("(" + selectedIndicesJson + ")") || []; } catch (e) {
+            return '{"success":false,"error":"Bad indices JSON: ' + e.toString().replace(/"/g, '\\"') + '"}';
+        }
+
+        var savedStates = [];
+        var numTracks = 0;
+        try { numTracks = seq.audioTracks.numTracks; } catch (e) {}
+
+        for (var i = 0; i < numTracks; i++) {
+            try {
+                var track = seq.audioTracks[i];
+                var wasMuted = false;
+                try { wasMuted = track.isMuted(); } catch (e) {}
+                savedStates.push({ index: i, wasMuted: wasMuted });
+
+                var isSelected = false;
+                for (var j = 0; j < selectedIndices.length; j++) {
+                    if (selectedIndices[j] === i) { isSelected = true; break; }
+                }
+                if (!isSelected) {
+                    try { track.setMute(true); } catch (e) {}
+                }
+            } catch (e) {}
+        }
+
+        return JSON.stringify({ success: true, savedStates: savedStates });
+    } catch (e) {
+        return '{"success":false,"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
+    }
+}
+
+function restoreAudioTrackMutes(savedStatesJson) {
+    try {
+        var seq = app.project.activeSequence;
+        if (!seq) return '{"success":false,"error":"No active sequence"}';
+
+        var savedStates = [];
+        try { savedStates = eval("(" + savedStatesJson + ")") || []; } catch (e) {
+            return '{"success":false,"error":"Bad states JSON: ' + e.toString().replace(/"/g, '\\"') + '"}';
+        }
+
+        for (var i = 0; i < savedStates.length; i++) {
+            try {
+                var state = savedStates[i];
+                var track = seq.audioTracks[state.index];
+                if (track) {
+                    try { track.setMute(state.wasMuted); } catch (e) {}
+                }
+            } catch (e) {}
+        }
+
+        return '{"success":true}';
     } catch (e) {
         return '{"success":false,"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
     }

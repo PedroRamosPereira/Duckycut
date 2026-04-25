@@ -96,7 +96,7 @@
     const elBtnLoadPreset     = document.getElementById("btnLoadPreset");
     const elPresetFileInput   = document.getElementById("presetFileInput");
     const elDeleteSilence     = document.getElementById("deleteSilence");
-    const elTargetTrack       = document.getElementById("targetTrack");
+    const elTrackList         = document.getElementById("trackList");
     const elBtnAnalyze        = document.getElementById("btnAnalyze");
     const elResultsSection    = document.getElementById("resultsSection");
     const elResultsContent    = document.getElementById("resultsContent");
@@ -118,6 +118,11 @@
     let probeResult     = null;   // { meanVolume, maxVolume, channelCount }
     let seqSettings     = null;   // from getSequenceSettings()
     let paddingLinked   = false;  // whether Padding In/Out are synced
+
+    function getSelectedTrackIndices() {
+        return Array.from(document.querySelectorAll(".track-cb:checked"))
+                    .map(function(cb) { return parseInt(cb.value, 10); });
+    }
 
     // ── Init ─────────────────────────────────────────────────────
     function init() {
@@ -336,7 +341,7 @@
                 if (info.error) { elSequenceName.textContent = "No sequence"; sequenceInfo = null; return; }
                 sequenceInfo = info;
                 elSequenceName.textContent = info.name;
-                populateTrackDropdown(info.audioTracks);
+                populateTrackCheckboxes(info.audioTracks);
                 setStatus("Sequence: " + info.name + " (" + info.framerate.toFixed(2) + " fps)", "success");
             } catch (e) {
                 elSequenceName.textContent = "No sequence"; sequenceInfo = null;
@@ -344,23 +349,26 @@
         });
     }
 
-    function populateTrackDropdown(tracks) {
-        elTargetTrack.innerHTML = '<option value="all">All Tracks (render mixdown)</option>';
-        if (tracks) {
-            tracks.forEach((t) => {
-                var opt = document.createElement("option");
-                opt.value = t.index;
-                opt.textContent = t.name + (t.clipCount > 0 ? "" : " (empty)");
-                elTargetTrack.appendChild(opt);
-            });
+    function populateTrackCheckboxes(tracks) {
+        if (!tracks || tracks.length === 0) {
+            elTrackList.innerHTML = '<span class="track-list-empty">No audio tracks found</span>';
+            return;
         }
-    }
-
-    function getMediaPath() {
-        var trackVal = elTargetTrack.value;
-        var trackIdx = trackVal === "all" ? "0" : trackVal;
-        return evalScript("getAudioTrackMediaPath(" + trackIdx + ")").then((r) => {
-            try { return JSON.parse(r).path || null; } catch (e) { return null; }
+        elTrackList.innerHTML = "";
+        tracks.forEach(function(t) {
+            var label = document.createElement("label");
+            label.className = "track-item";
+            var cb = document.createElement("input");
+            cb.type = "checkbox";
+            cb.className = "track-cb";
+            cb.value = t.index;
+            cb.checked = true;
+            var text = document.createTextNode(
+                t.name + (t.clipCount > 0 ? " (" + t.clipCount + " clips)" : " (empty)")
+            );
+            label.appendChild(cb);
+            label.appendChild(text);
+            elTrackList.appendChild(label);
         });
     }
 

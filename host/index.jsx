@@ -634,10 +634,10 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
 
         var zones = [];
         var opts  = {};
-        try { zones = JSON.parse(cutZonesJson) || []; } catch (e) {
-            return '{"success":false,"error":"Bad cutZones JSON"}';
+        try { zones = eval("(" + cutZonesJson + ")") || []; } catch (e) {
+            return '{"success":false,"error":"Bad cutZones JSON: ' + e.toString().replace(/"/g, '\\"') + '"}';
         }
-        try { opts = JSON.parse(optsJson) || {}; } catch (e) {}
+        try { opts = eval("(" + optsJson + ")") || {}; } catch (e) {}
         var fps    = (typeof opts.fps    === "number")  ? opts.fps    : 29.97;
         var isNTSC = (typeof opts.isNTSC === "boolean") ? opts.isNTSC : false;
 

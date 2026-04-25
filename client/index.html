@@ -193,11 +193,14 @@
             <input type="file" id="presetFileInput" accept=".json" style="display:none">
         </div>
 
+        <!-- Audio Tracks -->
         <div class="section">
-            <label class="section-label">Target Track</label>
-            <select id="targetTrack" class="dropdown">
-                <option value="all">All Tracks</option>
-            </select>
+            <label class="section-label">AUDIO TRACKS
+                <span class="section-hint">silence analysis only</span>
+            </label>
+            <div id="trackList" class="track-list">
+                <span class="track-list-empty">Load a sequence to see tracks</span>
+            </div>
         </div>
 
         <!-- Analyze Button -->

@@ -106,6 +106,10 @@
     const elProgressText      = document.getElementById("progressText");
     const elStatusBar         = document.getElementById("statusBar");
 
+    // Feature flag — when true, applyCuts skips XML generation and razors+removes
+    // directly in the timeline via host applyCutsInPlace (mirrors fireCut Alt+C).
+    const USE_INPLACE_CUTS = true;
+
     // ── State ─────────────────────────────────────────────────────
     let sequenceInfo    = null;   // from getActiveSequenceInfo()
     let sequenceClips   = null;   // from getFullSequenceClips() — all tracks
@@ -685,7 +689,68 @@
 
     // ── Apply Cuts ───────────────────────────────────────────────
     function applyCuts() {
-        if (!keepZones || keepZones.length === 0) { setStatus("No keep zones — run analysis first", "error"); return; }
+        if (!keepZones || keepZones.length === 0) {
+            setStatus("No keep zones — run analysis first", "error"); return;
+        }
+        if (USE_INPLACE_CUTS) return applyCutsInPlaceFromPanel();
+        return applyCutsViaXML();
+    }
+
+    function applyCutsInPlaceFromPanel() {
+        elBtnApply.disabled = true;
+        showProgress("Computing cut zones...");
+
+        const totalDuration = (analysisResult && analysisResult.mediaDuration)
+            || (seqSettings && seqSettings.durationSeconds) || 0;
+        if (!totalDuration) {
+            setStatus("Unknown sequence duration", "error");
+            hideProgress(); elBtnApply.disabled = false; return;
+        }
+
+        const sorted = keepZones.slice().sort(function (a, b) { return a[0] - b[0]; });
+        const cutZones = [];
+        let cursor = 0;
+        for (let i = 0; i < sorted.length; i++) {
+            if (sorted[i][0] > cursor) cutZones.push([cursor, sorted[i][0]]);
+            cursor = sorted[i][1];
+        }
+        if (cursor < totalDuration) cutZones.push([cursor, totalDuration]);
+
+        if (cutZones.length === 0) {
+            setStatus("Nothing to cut — keep zones cover the whole sequence", "info");
+            hideProgress(); elBtnApply.disabled = false; return;
+        }
+
+        const fps    = (seqSettings && seqSettings.framerate)
+                    || (sequenceInfo && sequenceInfo.framerate) || 29.97;
+        const isNTSC = (seqSettings && typeof seqSettings.isNTSC !== "undefined")
+                    ? seqSettings.isNTSC
+                    : (sequenceInfo && sequenceInfo.isNTSC) || false;
+
+        updateProgress(40, "Razoring " + cutZones.length + " zones...");
+
+        const zonesArg = JSON.stringify(JSON.stringify(cutZones));
+        const optsArg  = JSON.stringify(JSON.stringify({ fps: fps, isNTSC: isNTSC }));
+
+        evalScript("applyCutsInPlace(" + zonesArg + ", " + optsArg + ")").then(function (raw) {
+            try {
+                const data = JSON.parse(raw);
+                if (data.success) {
+                    updateProgress(100, "Done!");
+                    setStatus("Applied " + data.applied + " cuts" +
+                        (data.skipped ? " (" + data.skipped + " skipped)" : ""), "success");
+                    if (data._diag) console.log("[Duckycut] applyCutsInPlace diag:", data._diag);
+                } else {
+                    setStatus("Cut error: " + (data.error || "unknown"), "error");
+                }
+            } catch (e) {
+                setStatus("Cut parse error: " + e.message + " :: raw=" + raw, "error");
+            }
+            hideProgress(); elBtnApply.disabled = false;
+        });
+    }
+
+    function applyCutsViaXML() {
         if (!xmlGenerator) { setStatus("XML generator not loaded", "error"); return; }
 
         elBtnApply.disabled = true;

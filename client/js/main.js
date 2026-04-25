@@ -3,7 +3,6 @@
  *
  * FIXES:
  *   1. Overlays (V2, V3+): reads ALL tracks via getFullSequenceClips() and passes
- *      them to xmlGenerator, which maps every clip through the keepZones.
  *   2. Audio duplication: each audio clip now references its own sourcetrack
  *      channel; generator no longer duplicates A1 across all tracks.
  *   3. Framerate: getSequenceSettings() reads timebase directly from the
@@ -21,7 +20,6 @@
     const csInterface = new CSInterface();
 
     let silenceDetector = null;
-    let xmlGenerator    = null;
     let nodeRequire     = null;
     let modulesError    = "";
 
@@ -59,7 +57,6 @@
             }
 
             silenceDetector = nodeRequire(nodePath.join(serverDir, "silenceDetector.js"));
-            xmlGenerator    = nodeRequire(nodePath.join(serverDir, "xmlGenerator.js"));
         } catch (e) {
             modulesError = e.message;
         }
@@ -106,10 +103,6 @@
     const elProgressText      = document.getElementById("progressText");
     const elStatusBar         = document.getElementById("statusBar");
 
-    // Feature flag — when true, applyCuts skips XML generation and razors+removes
-    // directly in the timeline via host applyCutsInPlace (mirrors fireCut Alt+C).
-    const USE_INPLACE_CUTS = true;
-
     // ── State ─────────────────────────────────────────────────────
     let sequenceInfo    = null;   // from getActiveSequenceInfo()
     let sequenceClips   = null;   // from getFullSequenceClips() — all tracks
@@ -131,7 +124,7 @@
         refreshSequence();
         updateAggroHint();
 
-        if (silenceDetector && xmlGenerator) {
+        if (silenceDetector) {
             setStatus("Ready — run Auto Detect to calibrate", "success");
         } else {
             setStatus("Module error: " + (modulesError || "unknown"), "error");
@@ -714,8 +707,7 @@
         if (!keepZones || keepZones.length === 0) {
             setStatus("No keep zones — run analysis first", "error"); return;
         }
-        if (USE_INPLACE_CUTS) return applyCutsInPlaceFromPanel();
-        return applyCutsViaXML();
+        return applyCutsInPlaceFromPanel();
     }
 
     function applyCutsInPlaceFromPanel() {
@@ -769,102 +761,6 @@
                 setStatus("Cut parse error: " + e.message + " :: raw=" + raw, "error");
             }
             hideProgress(); elBtnApply.disabled = false;
-        });
-    }
-
-    function applyCutsViaXML() {
-        if (!xmlGenerator) { setStatus("XML generator not loaded", "error"); return; }
-
-        elBtnApply.disabled = true;
-        showProgress("Reading full sequence timeline...");
-
-        Promise.all([
-            evalScript("getFullSequenceClips()"),
-            evalScript("getSequenceSettings()"),
-            evalScript("getProjectPath()"),
-        ]).then(([clipsRaw, settingsRaw, projRaw]) => {
-            // Always re-read clips in case something changed
-            try {
-                var parsed = JSON.parse(clipsRaw);
-                if (Array.isArray(parsed)) sequenceClips = parsed;
-            } catch (e) {}
-
-            var settings = seqSettings;
-            try {
-                var fresh = JSON.parse(settingsRaw);
-                if (!fresh.error) settings = fresh;
-            } catch (e) {}
-
-            var projectDir = null;
-            try { var pd = JSON.parse(projRaw); projectDir = pd.projectDir || null; } catch (e) {}
-
-            if (!projectDir) {
-                setStatus("Save the project first", "error");
-                hideProgress(); elBtnApply.disabled = false; return;
-            }
-
-            updateProgress(30, "Generating FCP7 XML...");
-
-            var nPath       = nodeRequire("path");
-            var xmlFileName = (sequenceInfo ? sequenceInfo.name : "Duckycut") + "_duckycut_" + Date.now() + ".xml";
-            var outputPath  = nPath.join(projectDir, xmlFileName);
-
-            // Use actual sequence framerate — not hardcoded fallback
-            var fps = (settings && settings.framerate) ? settings.framerate
-                    : (sequenceInfo && sequenceInfo.framerate) ? sequenceInfo.framerate
-                    : 29.97;
-
-            // Exact framerate fields for precise frame math (from Adobe ticks)
-            var exactFps    = (settings && settings.exactFps) || fps;
-            var isNTSC      = (settings && typeof settings.isNTSC !== "undefined") ? settings.isNTSC : false;
-            var xmlTimebase = (settings && settings.xmlTimebase) || Math.round(fps);
-
-            var numAudioTracks = (settings && settings.audioTrackCount)
-                ? settings.audioTrackCount
-                : (sequenceInfo && sequenceInfo.audioTracks ? sequenceInfo.audioTracks.length : 1);
-
-            var numVideoTracks = (settings && settings.videoTrackCount)
-                ? settings.videoTrackCount
-                : (sequenceInfo && sequenceInfo.videoTracks ? sequenceInfo.videoTracks.length : 1);
-
-            try {
-                xmlGenerator.generateFCP7XML({
-                    keepZones:         keepZones,
-                    sequenceClips:     sequenceClips,
-                    sequenceName:      sequenceInfo ? sequenceInfo.name : "Duckycut",
-                    framerate:         fps,
-                    exactFps:          exactFps,
-                    isNTSC:            isNTSC,
-                    xmlTimebase:       xmlTimebase,
-                    width:             (settings && settings.width)           || 1920,
-                    height:            (settings && settings.height)          || 1080,
-                    audioSampleRate:   (settings && settings.audioSampleRate) || 48000,
-                    durationSeconds:   (settings && settings.durationSeconds) || (analysisResult && analysisResult.mediaDuration) || 0,
-                    outputPath:        outputPath,
-                    audioTrackCount:   numAudioTracks,
-                    videoTrackCount:   numVideoTracks,
-                    audioChannelCount: probeResult ? probeResult.channelCount : numAudioTracks,
-                });
-
-                updateProgress(70, "Importing XML into Premiere...");
-
-                var escapedPath = outputPath.replace(/\\/g, "/");
-                evalScript('importXMLToProject("' + escapedPath + '")').then((result) => {
-                    try {
-                        var data = JSON.parse(result);
-                        if (data.success) {
-                            updateProgress(100, "Done!");
-                            setStatus("New sequence created: " + (sequenceInfo ? sequenceInfo.name : "") + " [Duckycut]", "success");
-                        } else {
-                            setStatus("Import error: " + (data.message || "unknown"), "error");
-                        }
-                    } catch (e) { setStatus("Import parse error: " + e.message, "error"); }
-                    hideProgress(); elBtnApply.disabled = false;
-                });
-            } catch (err) {
-                setStatus("XML generation error: " + err.message, "error");
-                hideProgress(); elBtnApply.disabled = false;
-            }
         });
     }
 

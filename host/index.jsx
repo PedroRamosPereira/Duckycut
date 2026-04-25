@@ -39,6 +39,31 @@ function ticksToSeconds(t) {
     try { return Number(t) / TICKS; } catch(e) { return 0; }
 }
 
+function _secondsToTimecodeHost(seconds, fps, isNTSC) {
+    if (!fps || fps <= 0) fps = 30;
+    var nominalFps = Math.round(fps);
+    var totalFrames;
+    if (isNTSC) {
+        totalFrames = Math.round(seconds * nominalFps * 1000 / 1001);
+    } else {
+        totalFrames = Math.round(seconds * fps);
+    }
+    var ff = totalFrames % nominalFps;
+    var totalSec = Math.floor(totalFrames / nominalFps);
+    var ss = totalSec % 60;
+    var totalMin = Math.floor(totalSec / 60);
+    var mm = totalMin % 60;
+    var hh = Math.floor(totalMin / 60);
+    function pad(n) { return n < 10 ? "0" + n : "" + n; }
+    return pad(hh) + ":" + pad(mm) + ":" + pad(ss) + ":" + pad(ff);
+}
+
+function _clipFullyInside(clipStartSec, clipEndSec, zoneStartSec, zoneEndSec, fps) {
+    var halfFrame = (fps && fps > 0) ? (0.5 / fps) : 0.02;
+    return (clipStartSec >= zoneStartSec - halfFrame) &&
+           (clipEndSec   <= zoneEndSec   + halfFrame);
+}
+
 /**
  * Returns info about the active sequence: name, audio tracks, video tracks, duration.
  */
@@ -593,5 +618,118 @@ function getSequenceSettings() {
                '"durationSeconds":' + durationSeconds + '}';
     } catch (e) {
         return '{"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
+    }
+}
+
+/**
+ * Razor + ripple-delete of every cut zone across ALL video and audio tracks
+ * in the active sequence. Equivalent to selecting each zone with the playhead
+ * + Alt+C + Shift+Delete in Premiere, applied in batch from back to front
+ * so the ripple shifts don't invalidate later cuts.
+ */
+function applyCutsInPlace(cutZonesJson, optsJson) {
+    try {
+        var seq = app.project.activeSequence;
+        if (!seq) return '{"success":false,"error":"No active sequence"}';
+
+        var zones = [];
+        var opts  = {};
+        try { zones = JSON.parse(cutZonesJson) || []; } catch (e) {
+            return '{"success":false,"error":"Bad cutZones JSON"}';
+        }
+        try { opts = JSON.parse(optsJson) || {}; } catch (e) {}
+        var fps    = (typeof opts.fps    === "number")  ? opts.fps    : 29.97;
+        var isNTSC = (typeof opts.isNTSC === "boolean") ? opts.isNTSC : false;
+
+        if (!zones.length) return '{"success":true,"applied":0,"skipped":0}';
+
+        zones.sort(function (a, b) { return b[0] - a[0]; });
+
+        try { app.enableQE(); } catch (eQE) {
+            return '{"success":false,"error":"QE DOM not available: ' + eQE.toString().replace(/"/g, '\\"') + '"}';
+        }
+        var qeSeq = qe.project.getActiveSequence();
+        if (!qeSeq) return '{"success":false,"error":"QE active sequence not found"}';
+
+        var applied = 0, skipped = 0;
+        var diag = [];
+
+        for (var z = 0; z < zones.length; z++) {
+            var zStart = Number(zones[z][0]);
+            var zEnd   = Number(zones[z][1]);
+            if (!(zEnd > zStart)) { skipped++; continue; }
+
+            var startTC = _secondsToTimecodeHost(zStart, fps, isNTSC);
+            var endTC   = _secondsToTimecodeHost(zEnd,   fps, isNTSC);
+
+            try {
+                for (var v = 0; v < qeSeq.numVideoTracks; v++) {
+                    try { qeSeq.getVideoTrackAt(v).razor(endTC); }   catch (e1) {}
+                    try { qeSeq.getVideoTrackAt(v).razor(startTC); } catch (e2) {}
+                }
+                for (var a = 0; a < qeSeq.numAudioTracks; a++) {
+                    try { qeSeq.getAudioTrackAt(a).razor(endTC); }   catch (e3) {}
+                    try { qeSeq.getAudioTrackAt(a).razor(startTC); } catch (e4) {}
+                }
+            } catch (eRazor) {
+                diag.push("razor zone " + z + " failed: " + eRazor.toString());
+                skipped++;
+                continue;
+            }
+
+            try {
+                for (var vt = 0; vt < seq.videoTracks.numTracks; vt++) {
+                    var vTrack = seq.videoTracks[vt];
+                    var nVC = 0; try { nVC = vTrack.clips.numItems; } catch(eN) {}
+                    for (var vci = nVC - 1; vci >= 0; vci--) {
+                        try {
+                            var vClip = vTrack.clips[vci];
+                            if (!vClip) continue;
+                            var cs = 0, ce = 0;
+                            try { cs = vClip.start.seconds; } catch(eS) {}
+                            try { ce = vClip.end.seconds;   } catch(eE) {}
+                            if (_clipFullyInside(cs, ce, zStart, zEnd, fps)) {
+                                vClip.remove(true, true);
+                            }
+                        } catch (eRem) { diag.push("V remove fail t=" + vt + " c=" + vci + ": " + eRem.toString()); }
+                    }
+                }
+                for (var at = 0; at < seq.audioTracks.numTracks; at++) {
+                    var aTrack = seq.audioTracks[at];
+                    var nAC = 0; try { nAC = aTrack.clips.numItems; } catch(eN2) {}
+                    for (var aci = nAC - 1; aci >= 0; aci--) {
+                        try {
+                            var aClip = aTrack.clips[aci];
+                            if (!aClip) continue;
+                            var as = 0, ae = 0;
+                            try { as = aClip.start.seconds; } catch(eS2) {}
+                            try { ae = aClip.end.seconds;   } catch(eE2) {}
+                            if (_clipFullyInside(as, ae, zStart, zEnd, fps)) {
+                                aClip.remove(true, true);
+                            }
+                        } catch (eRem) { diag.push("A remove fail t=" + at + " c=" + aci + ": " + eRem.toString()); }
+                    }
+                }
+                applied++;
+            } catch (eRemAll) {
+                diag.push("remove block zone " + z + " failed: " + eRemAll.toString());
+                skipped++;
+            }
+        }
+
+        var result = '{"success":true,"applied":' + applied + ',"skipped":' + skipped;
+        if (diag.length) {
+            var diagStr = '[';
+            for (var d = 0; d < diag.length; d++) {
+                if (d > 0) diagStr += ',';
+                diagStr += '"' + String(diag[d]).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+            }
+            diagStr += ']';
+            result += ',"_diag":' + diagStr;
+        }
+        result += '}';
+        return result;
+    } catch (e) {
+        return '{"success":false,"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
     }
 }

@@ -385,7 +385,16 @@
         elBtnProbe.textContent = "Detecting...";
         setStatus("Probing audio volume...", "");
 
-        getMediaPath().then((mediaPath) => {
+        var selectedForProbe = getSelectedTrackIndices();
+        if (selectedForProbe.length === 0) {
+            setStatus("Select at least one audio track", "error");
+            elBtnProbe.disabled = false;
+            elBtnProbe.textContent = "Auto Detect";
+            return;
+        }
+        evalScript("getAudioTrackMediaPath(" + selectedForProbe[0] + ")").then(function(r) {
+            var mediaPath = null;
+            try { mediaPath = JSON.parse(r).path || null; } catch(e) {}
             if (!mediaPath) {
                 setStatus("No media found in track", "error");
                 elBtnProbe.disabled = false;

@@ -445,8 +445,7 @@
         Promise.all([
             evalScript("getFullSequenceClips()"),
             evalScript("getSequenceSettings()"),
-            evalScript("getProjectPath()"),
-        ]).then(function([clipsRaw, settingsRaw, projRaw]) {
+        ]).then(function([clipsRaw, settingsRaw]) {
             try {
                 var parsed = JSON.parse(clipsRaw);
                 sequenceClips = Array.isArray(parsed) ? parsed : null;
@@ -477,7 +476,12 @@
                 .then(function(muteRaw) {
                     try {
                         var mr = JSON.parse(muteRaw);
-                        if (mr.success) savedMuteStates = mr.savedStates;
+                        if (!mr.success) {
+                            setStatus("Failed to mute tracks: " + (mr.error || "unknown"), "error");
+                            hideProgress(); elBtnAnalyze.disabled = false;
+                            return Promise.reject(new Error("mute failed"));
+                        }
+                        savedMuteStates = mr.savedStates;
                     } catch(e) {}
 
                     updateProgress(15, "Queuing sequence render in Adobe Media Encoder...");
@@ -489,9 +493,10 @@
                     try { res = JSON.parse(r); } catch (e) { res = {}; }
 
                     if (!res.success) {
-                        restoreMutes(savedMuteStates);
-                        setStatus("Mixdown failed: " + (res.error || "unknown"), "error");
-                        hideProgress(); elBtnAnalyze.disabled = false;
+                        restoreMutes(savedMuteStates).then(function() {
+                            setStatus("Mixdown failed: " + (res.error || "unknown"), "error");
+                            hideProgress(); elBtnAnalyze.disabled = false;
+                        });
                         return;
                     }
 
@@ -508,9 +513,10 @@
                         }
                         elapsed += pollInterval;
                         if (elapsed >= pollTimeout) {
-                            restoreMutes(savedMuteStates);
-                            setStatus("Timeout: AME didn't produce the WAV in 3 min", "error");
-                            hideProgress(); elBtnAnalyze.disabled = false;
+                            restoreMutes(savedMuteStates).then(function() {
+                                setStatus("Timeout: AME didn't produce the WAV in 3 min", "error");
+                                hideProgress(); elBtnAnalyze.disabled = false;
+                            });
                             return;
                         }
                         updateProgress(
@@ -543,9 +549,10 @@
 
                             elapsed += stableSampleMs;
                             if (elapsed >= pollTimeout) {
-                                restoreMutes(savedMuteStates);
-                                setStatus("Timeout waiting for AME render to finish", "error");
-                                hideProgress(); elBtnAnalyze.disabled = false;
+                                restoreMutes(savedMuteStates).then(function() {
+                                    setStatus("Timeout waiting for AME render to finish", "error");
+                                    hideProgress(); elBtnAnalyze.disabled = false;
+                                });
                                 return;
                             }
 
@@ -561,6 +568,11 @@
                     }
 
                     waitForFile();
+                })
+                .catch(function(err) {
+                    restoreMutes(savedMuteStates);
+                    setStatus("Analysis error: " + (err.message || "unknown"), "error");
+                    hideProgress(); elBtnAnalyze.disabled = false;
                 });
 
             function runDetection(audioPath) {

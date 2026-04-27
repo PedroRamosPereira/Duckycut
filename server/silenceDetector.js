@@ -84,8 +84,8 @@ function detectSilence(mediaPath, thresholdDb, minDuration) {
             reject(new Error(`FFmpeg not found or failed to start: ${err.message}`))
         );
         proc.on("close", (code) => {
-            if (code !== 0 && !output.includes("silence_start")) {
-                reject(new Error(`FFmpeg exited with code ${code}`));
+            if (code !== 0) {
+                reject(new Error(`FFmpeg exited with code ${code}. Output: ${output.slice(-200)}`));
                 return;
             }
             const silenceIntervals = parseSilenceOutput(output);

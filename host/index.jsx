@@ -59,9 +59,11 @@ function _secondsToTimecodeHost(seconds, fps, isNTSC) {
 }
 
 function _clipFullyInside(clipStartSec, clipEndSec, zoneStartSec, zoneEndSec, fps) {
-    var halfFrame = (fps && fps > 0) ? (0.5 / fps) : 0.02;
-    return (clipStartSec >= zoneStartSec - halfFrame) &&
-           (clipEndSec   <= zoneEndSec   + halfFrame);
+    // 1.5 frames covers NTSC tick-to-seconds drift (up to ~1 frame off)
+    // without false-positives: keep-zone clips are much longer than 3 frames.
+    var tol = (fps && fps > 0) ? (1.5 / fps) : 0.06;
+    return (clipStartSec >= zoneStartSec - tol) &&
+           (clipEndSec   <= zoneEndSec   + tol);
 }
 
 /**
@@ -657,13 +659,22 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         var applied = 0, skipped = 0;
         var diag = [];
 
+        // razor() uses display timecode (relative to seq.zeroPoint).
+        // If the sequence doesn't start at 00:00:00:00, add the offset so
+        // the cut lands on the correct frame.
+        var zpSec = 0;
+        try {
+            var zpTicks = Number(seq.zeroPoint);
+            if (!isNaN(zpTicks) && zpTicks > 0) zpSec = zpTicks / TICKS;
+        } catch (eZP) {}
+
         for (var z = 0; z < zones.length; z++) {
             var zStart = Number(zones[z][0]);
             var zEnd   = Number(zones[z][1]);
             if (!(zEnd > zStart)) { skipped++; continue; }
 
-            var startTC = _secondsToTimecodeHost(zStart, fps, isNTSC);
-            var endTC   = _secondsToTimecodeHost(zEnd,   fps, isNTSC);
+            var startTC = _secondsToTimecodeHost(zStart + zpSec, fps, isNTSC);
+            var endTC   = _secondsToTimecodeHost(zEnd   + zpSec, fps, isNTSC);
 
             try {
                 for (var v = 0; v < qeSeq.numVideoTracks; v++) {

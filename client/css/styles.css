@@ -278,3 +278,36 @@ input[type="range"]::-webkit-slider-thumb:hover { background: #ffb84d; transform
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: #232323; }
 ::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+
+/* ── Track List (checkbox per audio track) ── */
+.track-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    background: #2a2a2a;
+    border-radius: 4px;
+    padding: 6px 8px;
+}
+.track-list-empty {
+    font-size: 11px;
+    color: #555;
+    font-style: italic;
+}
+.track-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: #bbb;
+    cursor: pointer;
+    padding: 2px 0;
+    user-select: none;
+}
+.track-item:hover { color: #e0e0e0; }
+.track-cb {
+    width: 14px;
+    height: 14px;
+    accent-color: #f0a030;
+    cursor: pointer;
+    flex-shrink: 0;
+}

@@ -3,7 +3,6 @@
  *
  * FIXES:
  *   1. Overlays (V2, V3+): reads ALL tracks via getFullSequenceClips() and passes
- *      them to xmlGenerator, which maps every clip through the keepZones.
  *   2. Audio duplication: each audio clip now references its own sourcetrack
  *      channel; generator no longer duplicates A1 across all tracks.
  *   3. Framerate: getSequenceSettings() reads timebase directly from the
@@ -21,7 +20,6 @@
     const csInterface = new CSInterface();
 
     let silenceDetector = null;
-    let xmlGenerator    = null;
     let nodeRequire     = null;
     let modulesError    = "";
 
@@ -59,7 +57,6 @@
             }
 
             silenceDetector = nodeRequire(nodePath.join(serverDir, "silenceDetector.js"));
-            xmlGenerator    = nodeRequire(nodePath.join(serverDir, "xmlGenerator.js"));
         } catch (e) {
             modulesError = e.message;
         }
@@ -96,7 +93,7 @@
     const elBtnLoadPreset     = document.getElementById("btnLoadPreset");
     const elPresetFileInput   = document.getElementById("presetFileInput");
     const elDeleteSilence     = document.getElementById("deleteSilence");
-    const elTargetTrack       = document.getElementById("targetTrack");
+    const elTrackList         = document.getElementById("trackList");
     const elBtnAnalyze        = document.getElementById("btnAnalyze");
     const elResultsSection    = document.getElementById("resultsSection");
     const elResultsContent    = document.getElementById("resultsContent");
@@ -115,6 +112,11 @@
     let seqSettings     = null;   // from getSequenceSettings()
     let paddingLinked   = false;  // whether Padding In/Out are synced
 
+    function getSelectedTrackIndices() {
+        return Array.from(document.querySelectorAll(".track-cb:checked"))
+                    .map(function(cb) { return parseInt(cb.value, 10); });
+    }
+
     // ── Init ─────────────────────────────────────────────────────
     function init() {
         bindSliders();
@@ -122,7 +124,7 @@
         refreshSequence();
         updateAggroHint();
 
-        if (silenceDetector && xmlGenerator) {
+        if (silenceDetector) {
             setStatus("Ready — run Auto Detect to calibrate", "success");
         } else {
             setStatus("Module error: " + (modulesError || "unknown"), "error");
@@ -332,7 +334,7 @@
                 if (info.error) { elSequenceName.textContent = "No sequence"; sequenceInfo = null; return; }
                 sequenceInfo = info;
                 elSequenceName.textContent = info.name;
-                populateTrackDropdown(info.audioTracks);
+                populateTrackCheckboxes(info.audioTracks);
                 setStatus("Sequence: " + info.name + " (" + info.framerate.toFixed(2) + " fps)", "success");
             } catch (e) {
                 elSequenceName.textContent = "No sequence"; sequenceInfo = null;
@@ -340,23 +342,26 @@
         });
     }
 
-    function populateTrackDropdown(tracks) {
-        elTargetTrack.innerHTML = '<option value="all">All Tracks (render mixdown)</option>';
-        if (tracks) {
-            tracks.forEach((t) => {
-                var opt = document.createElement("option");
-                opt.value = t.index;
-                opt.textContent = t.name + (t.clipCount > 0 ? "" : " (empty)");
-                elTargetTrack.appendChild(opt);
-            });
+    function populateTrackCheckboxes(tracks) {
+        if (!tracks || tracks.length === 0) {
+            elTrackList.innerHTML = '<span class="track-list-empty">No audio tracks found</span>';
+            return;
         }
-    }
-
-    function getMediaPath() {
-        var trackVal = elTargetTrack.value;
-        var trackIdx = trackVal === "all" ? "0" : trackVal;
-        return evalScript("getAudioTrackMediaPath(" + trackIdx + ")").then((r) => {
-            try { return JSON.parse(r).path || null; } catch (e) { return null; }
+        elTrackList.innerHTML = "";
+        tracks.forEach(function(t) {
+            var label = document.createElement("label");
+            label.className = "track-item";
+            var cb = document.createElement("input");
+            cb.type = "checkbox";
+            cb.className = "track-cb";
+            cb.value = t.index;
+            cb.checked = true;
+            var text = document.createTextNode(
+                t.name + (t.clipCount > 0 ? " (" + t.clipCount + " clips)" : " (empty)")
+            );
+            label.appendChild(cb);
+            label.appendChild(text);
+            elTrackList.appendChild(label);
         });
     }
 
@@ -373,7 +378,16 @@
         elBtnProbe.textContent = "Detecting...";
         setStatus("Probing audio volume...", "");
 
-        getMediaPath().then((mediaPath) => {
+        var selectedForProbe = getSelectedTrackIndices();
+        if (selectedForProbe.length === 0) {
+            setStatus("Select at least one audio track", "error");
+            elBtnProbe.disabled = false;
+            elBtnProbe.textContent = "Auto Detect";
+            return;
+        }
+        evalScript("getAudioTrackMediaPath(" + selectedForProbe[0] + ")").then(function(r) {
+            var mediaPath = null;
+            try { mediaPath = JSON.parse(r).path || null; } catch(e) {}
             if (!mediaPath) {
                 setStatus("No media found in track", "error");
                 elBtnProbe.disabled = false;
@@ -403,21 +417,28 @@
     }
 
     // ── Run Analysis ─────────────────────────────────────────────
+    function restoreMutes(savedStates) {
+        if (!savedStates) return Promise.resolve();
+        return evalScript("restoreAudioTrackMutes(" + JSON.stringify(JSON.stringify(savedStates)) + ")");
+    }
+
     function runAnalysis() {
         if (!sequenceInfo) { setStatus("No active sequence", "error"); return; }
         if (!silenceDetector) { setStatus("Silence detector not loaded", "error"); return; }
+
+        var selectedIdx = getSelectedTrackIndices();
+        if (selectedIdx.length === 0) {
+            setStatus("Select at least one audio track", "error"); return;
+        }
 
         elBtnAnalyze.disabled = true;
         elResultsSection.style.display = "none";
         showProgress("Reading sequence tracks...");
 
-        // Step 1: read all clips from every track
         Promise.all([
             evalScript("getFullSequenceClips()"),
             evalScript("getSequenceSettings()"),
-            evalScript("getProjectPath()"),
-        ]).then(([clipsRaw, settingsRaw, projRaw]) => {
-            // Parse sequence clips (V1/V2/overlays + audio tracks)
+        ]).then(function([clipsRaw, settingsRaw]) {
             try {
                 var parsed = JSON.parse(clipsRaw);
                 sequenceClips = Array.isArray(parsed) ? parsed : null;
@@ -428,123 +449,127 @@
                 if (seqSettings.error) seqSettings = null;
             } catch (e) { seqSettings = null; }
 
-            var projectDir = null;
-            try {
-                var pd = JSON.parse(projRaw);
-                projectDir = pd.projectDir || null;
-            } catch (e) {}
-
             updateProgress(10, "Preparing audio for analysis...");
 
-            // Step 2: resolve audio source
             var threshold   = computeThreshold(elAggressiveness.value);
             var minDuration = parseInt(elMinDuration.value, 10) / 1000;
 
-            if (elTargetTrack.value === "all") {
-                // ── Native Premiere mixdown (preserves effects/EQ/volume) ──
-                var fs2 = nodeRequire("fs");
-                var os2 = nodeRequire("os");
-                var tempWav = (os2.tmpdir() + "/duckycut_temp_mixdown_" + Date.now() + ".wav")
-                                .replace(/\\/g, "/");
+            var fs2 = nodeRequire("fs");
+            var os2 = nodeRequire("os");
+            var tempWav = (os2.tmpdir() + "/duckycut_temp_mixdown_" + Date.now() + ".wav")
+                            .replace(/\\/g, "/");
+            var extensionRoot = csInterface.getSystemPath(SystemPath.EXTENSION)
+                                    .replace(/\\/g, "/");
 
-                updateProgress(15, "Queuing sequence render in Adobe Media Encoder...");
+            var savedMuteStates = null;
 
-                var extensionRoot = csInterface.getSystemPath(SystemPath.EXTENSION)
-                                        .replace(/\\/g, "/");
+            updateProgress(12, "Muting unselected audio tracks...");
 
-                evalScript('exportSequenceAudio("' + tempWav.replace(/"/g, '\\"') + '","' + extensionRoot.replace(/"/g, '\\"') + '")')
-                    .then(function (r) {
-                        var res;
-                        try { res = JSON.parse(r); } catch (e) { res = {}; }
+            evalScript("muteAudioTracks(" + JSON.stringify(JSON.stringify(selectedIdx)) + ")")
+                .then(function(muteRaw) {
+                    try {
+                        var mr = JSON.parse(muteRaw);
+                        if (!mr.success) {
+                            setStatus("Failed to mute tracks: " + (mr.error || "unknown"), "error");
+                            hideProgress(); elBtnAnalyze.disabled = false;
+                            return Promise.reject(new Error("mute failed"));
+                        }
+                        savedMuteStates = mr.savedStates;
+                    } catch(e) {}
 
-                        if (!res.success) {
+                    updateProgress(15, "Queuing sequence render in Adobe Media Encoder...");
+
+                    return evalScript('exportSequenceAudio("' + tempWav.replace(/"/g, '\\"') + '","' + extensionRoot.replace(/"/g, '\\"') + '")');
+                })
+                .then(function(r) {
+                    var res;
+                    try { res = JSON.parse(r); } catch (e) { res = {}; }
+
+                    if (!res.success) {
+                        restoreMutes(savedMuteStates).then(function() {
                             setStatus("Mixdown failed: " + (res.error || "unknown"), "error");
                             hideProgress(); elBtnAnalyze.disabled = false;
+                        });
+                        return;
+                    }
+
+                    var pollInterval   = 500;
+                    var pollTimeout    = 180000;
+                    var stableSampleMs = 300;
+                    var stableNeeded   = 4;
+                    var elapsed        = 0;
+
+                    function waitForFile() {
+                        if (fs2.existsSync(tempWav)) {
+                            waitForStableSize();
                             return;
                         }
-
-                        // ── Wait for AME to finish writing the WAV ──
-                        // Two-phase poll: first wait for file to appear, then
-                        // wait for its size to be stable for N consecutive
-                        // samples (AME keeps the handle open while encoding).
-                        // Reading too early → FFmpeg EACCES (exit -13).
-                        var pollInterval   = 500;    // ms
-                        var pollTimeout    = 180000; // 3 min max total
-                        var stableSampleMs = 300;
-                        var stableNeeded   = 4;      // ~1.2s of unchanged size
-                        var elapsed        = 0;
-
-                        function waitForFile() {
-                            if (fs2.existsSync(tempWav)) {
-                                waitForStableSize();
-                                return;
-                            }
-                            elapsed += pollInterval;
-                            if (elapsed >= pollTimeout) {
+                        elapsed += pollInterval;
+                        if (elapsed >= pollTimeout) {
+                            restoreMutes(savedMuteStates).then(function() {
                                 setStatus("Timeout: AME didn't produce the WAV in 3 min", "error");
                                 hideProgress(); elBtnAnalyze.disabled = false;
-                                return;
-                            }
-                            updateProgress(
-                                15 + Math.min(8, Math.round(elapsed / pollTimeout * 8)),
-                                "Waiting for Adobe Media Encoder to start..."
-                            );
-                            setTimeout(waitForFile, pollInterval);
+                            });
+                            return;
                         }
+                        updateProgress(
+                            15 + Math.min(8, Math.round(elapsed / pollTimeout * 8)),
+                            "Waiting for Adobe Media Encoder to start..."
+                        );
+                        setTimeout(waitForFile, pollInterval);
+                    }
 
-                        function waitForStableSize() {
-                            var lastSize    = -1;
-                            var stableCount = 0;
+                    function waitForStableSize() {
+                        var lastSize    = -1;
+                        var stableCount = 0;
 
-                            function sample() {
-                                var size = -1;
-                                try { size = fs2.statSync(tempWav).size; } catch (e) {}
+                        function sample() {
+                            var size = -1;
+                            try { size = fs2.statSync(tempWav).size; } catch (e) {}
 
-                                if (size > 0 && size === lastSize) {
-                                    stableCount++;
-                                    if (stableCount >= stableNeeded) {
-                                        runDetection(tempWav, true);
-                                        return;
-                                    }
-                                } else {
-                                    stableCount = 0;
-                                }
-                                lastSize = size;
-
-                                elapsed += stableSampleMs;
-                                if (elapsed >= pollTimeout) {
-                                    setStatus("Timeout waiting for AME render to finish", "error");
-                                    hideProgress(); elBtnAnalyze.disabled = false;
+                            if (size > 0 && size === lastSize) {
+                                stableCount++;
+                                if (stableCount >= stableNeeded) {
+                                    restoreMutes(savedMuteStates).then(function() {
+                                        runDetection(tempWav);
+                                    });
                                     return;
                                 }
-
-                                var sizeMB = size > 0 ? (Math.round(size / 1024 / 1024 * 10) / 10) : 0;
-                                updateProgress(
-                                    23 + Math.min(2, stableCount),
-                                    "Rendering in Adobe Media Encoder... " +
-                                        (sizeMB > 0 ? sizeMB + " MB" : "")
-                                );
-                                setTimeout(sample, stableSampleMs);
+                            } else {
+                                stableCount = 0;
                             }
-                            sample();
+                            lastSize = size;
+
+                            elapsed += stableSampleMs;
+                            if (elapsed >= pollTimeout) {
+                                restoreMutes(savedMuteStates).then(function() {
+                                    setStatus("Timeout waiting for AME render to finish", "error");
+                                    hideProgress(); elBtnAnalyze.disabled = false;
+                                });
+                                return;
+                            }
+
+                            var sizeMB = size > 0 ? (Math.round(size / 1024 / 1024 * 10) / 10) : 0;
+                            updateProgress(
+                                23 + Math.min(2, stableCount),
+                                "Rendering in Adobe Media Encoder... " +
+                                    (sizeMB > 0 ? sizeMB + " MB" : "")
+                            );
+                            setTimeout(sample, stableSampleMs);
                         }
-
-                        waitForFile();
-                    });
-            } else {
-                // ── Single track: use raw source file directly ──
-                getMediaPath().then(function (audioPath) {
-                    if (!audioPath) {
-                        setStatus("No audio media found in track", "error");
-                        hideProgress(); elBtnAnalyze.disabled = false; return;
+                        sample();
                     }
-                    runDetection(audioPath, false);
-                });
-            }
 
-            function runDetection(audioPath, wasRendered) {
-                var renderNote = wasRendered ? " (rendered mixdown)" : " (source file)";
-                updateProgress(25, "Running FFmpeg silence detection" + renderNote + "...");
+                    waitForFile();
+                })
+                .catch(function(err) {
+                    restoreMutes(savedMuteStates);
+                    setStatus("Analysis error: " + (err.message || "unknown"), "error");
+                    hideProgress(); elBtnAnalyze.disabled = false;
+                });
+
+            function runDetection(audioPath) {
+                updateProgress(25, "Running FFmpeg silence detection (rendered mixdown)...");
 
                 silenceDetector.detectSilence(audioPath, threshold, minDuration)
                     .then(function (result) {
@@ -562,21 +587,15 @@
                             }
                         );
 
-                        // Clean up temp WAV
-                        if (wasRendered) {
-                            try { nodeRequire("fs").unlinkSync(audioPath); } catch (e) {}
-                        }
+                        try { nodeRequire("fs").unlinkSync(audioPath); } catch (e) {}
 
                         updateProgress(100, "Analysis complete!");
-                        showResults(result, keepZones, wasRendered);
-                        setStatus("Analysis complete — threshold: " + threshold + " dB" + renderNote, "success");
+                        showResults(result, keepZones, true);
+                        setStatus("Analysis complete — threshold: " + threshold + " dB (rendered mixdown)", "success");
                         hideProgress(); elBtnAnalyze.disabled = false;
                     })
                     .catch(function (err) {
-                        // Clean up temp WAV on error too
-                        if (wasRendered) {
-                            try { nodeRequire("fs").unlinkSync(audioPath); } catch (e) {}
-                        }
+                        try { nodeRequire("fs").unlinkSync(audioPath); } catch (e) {}
                         setStatus("FFmpeg error: " + err.message, "error");
                         hideProgress(); elBtnAnalyze.disabled = false;
                     });
@@ -685,99 +704,63 @@
 
     // ── Apply Cuts ───────────────────────────────────────────────
     function applyCuts() {
-        if (!keepZones || keepZones.length === 0) { setStatus("No keep zones — run analysis first", "error"); return; }
-        if (!xmlGenerator) { setStatus("XML generator not loaded", "error"); return; }
+        if (!keepZones || keepZones.length === 0) {
+            setStatus("No keep zones — run analysis first", "error"); return;
+        }
+        return applyCutsInPlaceFromPanel();
+    }
 
+    function applyCutsInPlaceFromPanel() {
         elBtnApply.disabled = true;
-        showProgress("Reading full sequence timeline...");
+        showProgress("Computing cut zones...");
 
-        Promise.all([
-            evalScript("getFullSequenceClips()"),
-            evalScript("getSequenceSettings()"),
-            evalScript("getProjectPath()"),
-        ]).then(([clipsRaw, settingsRaw, projRaw]) => {
-            // Always re-read clips in case something changed
+        const totalDuration = (analysisResult && analysisResult.mediaDuration)
+            || (seqSettings && seqSettings.durationSeconds) || 0;
+        if (!totalDuration) {
+            setStatus("Unknown sequence duration", "error");
+            hideProgress(); elBtnApply.disabled = false; return;
+        }
+
+        const sorted = keepZones.slice().sort(function (a, b) { return a[0] - b[0]; });
+        const cutZones = [];
+        let cursor = 0;
+        for (let i = 0; i < sorted.length; i++) {
+            if (sorted[i][0] > cursor) cutZones.push([cursor, sorted[i][0]]);
+            cursor = sorted[i][1];
+        }
+        if (cursor < totalDuration) cutZones.push([cursor, totalDuration]);
+
+        if (cutZones.length === 0) {
+            setStatus("Nothing to cut — keep zones cover the whole sequence", "info");
+            hideProgress(); elBtnApply.disabled = false; return;
+        }
+
+        const fps    = (seqSettings && seqSettings.framerate)
+                    || (sequenceInfo && sequenceInfo.framerate) || 29.97;
+        const isNTSC = (seqSettings && typeof seqSettings.isNTSC !== "undefined")
+                    ? seqSettings.isNTSC
+                    : (sequenceInfo && sequenceInfo.isNTSC) || false;
+
+        updateProgress(40, "Razoring " + cutZones.length + " zones...");
+
+        const zonesArg = JSON.stringify(JSON.stringify(cutZones));
+        const optsArg  = JSON.stringify(JSON.stringify({ fps: fps, isNTSC: isNTSC }));
+
+        evalScript("applyCutsInPlace(" + zonesArg + ", " + optsArg + ")").then(function (raw) {
             try {
-                var parsed = JSON.parse(clipsRaw);
-                if (Array.isArray(parsed)) sequenceClips = parsed;
-            } catch (e) {}
-
-            var settings = seqSettings;
-            try {
-                var fresh = JSON.parse(settingsRaw);
-                if (!fresh.error) settings = fresh;
-            } catch (e) {}
-
-            var projectDir = null;
-            try { var pd = JSON.parse(projRaw); projectDir = pd.projectDir || null; } catch (e) {}
-
-            if (!projectDir) {
-                setStatus("Save the project first", "error");
-                hideProgress(); elBtnApply.disabled = false; return;
+                const data = JSON.parse(raw);
+                if (data.success) {
+                    updateProgress(100, "Done!");
+                    setStatus("Applied " + data.applied + " cuts" +
+                        (data.skipped ? " (" + data.skipped + " skipped)" : ""), "success");
+                    if (data._diag) console.log("[Duckycut] applyCutsInPlace diag:", data._diag);
+                } else {
+                    setStatus("Cut error: " + (data.error || "unknown"), "error");
+                }
+            } catch (e) {
+                setStatus("Cut parse error: " + e.message + " :: raw=" + raw, "error");
             }
-
-            updateProgress(30, "Generating FCP7 XML...");
-
-            var nPath       = nodeRequire("path");
-            var xmlFileName = (sequenceInfo ? sequenceInfo.name : "Duckycut") + "_duckycut_" + Date.now() + ".xml";
-            var outputPath  = nPath.join(projectDir, xmlFileName);
-
-            // Use actual sequence framerate — not hardcoded fallback
-            var fps = (settings && settings.framerate) ? settings.framerate
-                    : (sequenceInfo && sequenceInfo.framerate) ? sequenceInfo.framerate
-                    : 29.97;
-
-            // Exact framerate fields for precise frame math (from Adobe ticks)
-            var exactFps    = (settings && settings.exactFps) || fps;
-            var isNTSC      = (settings && typeof settings.isNTSC !== "undefined") ? settings.isNTSC : false;
-            var xmlTimebase = (settings && settings.xmlTimebase) || Math.round(fps);
-
-            var numAudioTracks = (settings && settings.audioTrackCount)
-                ? settings.audioTrackCount
-                : (sequenceInfo && sequenceInfo.audioTracks ? sequenceInfo.audioTracks.length : 1);
-
-            var numVideoTracks = (settings && settings.videoTrackCount)
-                ? settings.videoTrackCount
-                : (sequenceInfo && sequenceInfo.videoTracks ? sequenceInfo.videoTracks.length : 1);
-
-            try {
-                xmlGenerator.generateFCP7XML({
-                    keepZones:         keepZones,
-                    sequenceClips:     sequenceClips,
-                    sequenceName:      sequenceInfo ? sequenceInfo.name : "Duckycut",
-                    framerate:         fps,
-                    exactFps:          exactFps,
-                    isNTSC:            isNTSC,
-                    xmlTimebase:       xmlTimebase,
-                    width:             (settings && settings.width)           || 1920,
-                    height:            (settings && settings.height)          || 1080,
-                    audioSampleRate:   (settings && settings.audioSampleRate) || 48000,
-                    durationSeconds:   (settings && settings.durationSeconds) || (analysisResult && analysisResult.mediaDuration) || 0,
-                    outputPath:        outputPath,
-                    audioTrackCount:   numAudioTracks,
-                    videoTrackCount:   numVideoTracks,
-                    audioChannelCount: probeResult ? probeResult.channelCount : numAudioTracks,
-                });
-
-                updateProgress(70, "Importing XML into Premiere...");
-
-                var escapedPath = outputPath.replace(/\\/g, "/");
-                evalScript('importXMLToProject("' + escapedPath + '")').then((result) => {
-                    try {
-                        var data = JSON.parse(result);
-                        if (data.success) {
-                            updateProgress(100, "Done!");
-                            setStatus("New sequence created: " + (sequenceInfo ? sequenceInfo.name : "") + " [Duckycut]", "success");
-                        } else {
-                            setStatus("Import error: " + (data.message || "unknown"), "error");
-                        }
-                    } catch (e) { setStatus("Import parse error: " + e.message, "error"); }
-                    hideProgress(); elBtnApply.disabled = false;
-                });
-            } catch (err) {
-                setStatus("XML generation error: " + err.message, "error");
-                hideProgress(); elBtnApply.disabled = false;
-            }
+            hideProgress(); elBtnApply.disabled = false;
         });
     }
 

@@ -710,6 +710,21 @@
         return applyCutsInPlaceFromPanel();
     }
 
+    // Snap a sub-frame seconds value onto the nearest frame boundary using the
+    // same rounding the host TC converter uses. Eliminates ±½-frame drift from
+    // independent rounding of zone start vs end downstream.
+    function snapSecondsToFrame(seconds, fps, isNTSC) {
+        if (!fps || fps <= 0) fps = 29.97;
+        var nominalFps = Math.round(fps);
+        var totalFrames;
+        if (isNTSC) {
+            totalFrames = Math.round(seconds * nominalFps * 1000 / 1001);
+            return totalFrames * 1001 / (1000 * nominalFps);
+        }
+        totalFrames = Math.round(seconds * fps);
+        return totalFrames / fps;
+    }
+
     function applyCutsInPlaceFromPanel() {
         elBtnApply.disabled = true;
         showProgress("Computing cut zones...");
@@ -721,30 +736,44 @@
             hideProgress(); elBtnApply.disabled = false; return;
         }
 
+        const fps    = (seqSettings && seqSettings.framerate)
+                    || (sequenceInfo && sequenceInfo.framerate) || 29.97;
+        const isNTSC = (seqSettings && typeof seqSettings.isNTSC !== "undefined")
+                    ? seqSettings.isNTSC
+                    : (sequenceInfo && sequenceInfo.isNTSC) || false;
+        const isDropFrame = (seqSettings && typeof seqSettings.isDropFrame === "boolean")
+                    ? seqSettings.isDropFrame : false;
+
         const sorted = keepZones.slice().sort(function (a, b) { return a[0] - b[0]; });
-        const cutZones = [];
+        const rawCuts = [];
         let cursor = 0;
         for (let i = 0; i < sorted.length; i++) {
-            if (sorted[i][0] > cursor) cutZones.push([cursor, sorted[i][0]]);
+            if (sorted[i][0] > cursor) rawCuts.push([cursor, sorted[i][0]]);
             cursor = sorted[i][1];
         }
-        if (cursor < totalDuration) cutZones.push([cursor, totalDuration]);
+        if (cursor < totalDuration) rawCuts.push([cursor, totalDuration]);
+
+        // Snap each boundary to a frame so the host's TC conversion can't shift
+        // it by ±½ frame (asymmetric round of zone start vs end). Drop zones
+        // that collapse to zero width after snapping.
+        const cutZones = [];
+        for (let i = 0; i < rawCuts.length; i++) {
+            const s = snapSecondsToFrame(rawCuts[i][0], fps, isNTSC);
+            const e = snapSecondsToFrame(rawCuts[i][1], fps, isNTSC);
+            if (e > s) cutZones.push([s, e]);
+        }
 
         if (cutZones.length === 0) {
             setStatus("Nothing to cut — keep zones cover the whole sequence", "info");
             hideProgress(); elBtnApply.disabled = false; return;
         }
 
-        const fps    = (seqSettings && seqSettings.framerate)
-                    || (sequenceInfo && sequenceInfo.framerate) || 29.97;
-        const isNTSC = (seqSettings && typeof seqSettings.isNTSC !== "undefined")
-                    ? seqSettings.isNTSC
-                    : (sequenceInfo && sequenceInfo.isNTSC) || false;
-
         updateProgress(40, "Razoring " + cutZones.length + " zones...");
 
         const zonesArg = JSON.stringify(JSON.stringify(cutZones));
-        const optsArg  = JSON.stringify(JSON.stringify({ fps: fps, isNTSC: isNTSC }));
+        const optsArg  = JSON.stringify(JSON.stringify({
+            fps: fps, isNTSC: isNTSC, isDropFrame: isDropFrame
+        }));
 
         evalScript("applyCutsInPlace(" + zonesArg + ", " + optsArg + ")").then(function (raw) {
             try {

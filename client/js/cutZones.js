@@ -59,6 +59,56 @@
         return mergeOverlapping(valid);
     }
 
+    var TICKS_PER_SECOND = 254016000000;
+
+    // seq.zeroPoint can be: string ticks (PPro pre-14), number ticks,
+    // Time object with .seconds/.ticks (PPro 14+), or null/empty.
+    // Number(timeObject) returns NaN, which is the bug this guards against.
+    function parseZeroPoint(raw) {
+        if (raw === null || raw === undefined || raw === "") return 0;
+        if (typeof raw === "object") {
+            if (typeof raw.seconds === "number" && !isNaN(raw.seconds)) {
+                return raw.seconds;
+            }
+            if (raw.ticks !== undefined) {
+                var t = Number(raw.ticks);
+                return isNaN(t) ? 0 : t / TICKS_PER_SECOND;
+            }
+            return 0;
+        }
+        var n = Number(raw);
+        if (isNaN(n)) return 0;
+        return n / TICKS_PER_SECOND;
+    }
+
+    // 29.97 / 59.94 drop-frame timecode (SMPTE 12M).
+    // Skip 2 (or 4 for 60p) frames at start of every minute except every 10th.
+    function secondsToDropTimecode(seconds, fps) {
+        if (!fps || fps <= 0) fps = 29.97;
+        var nominalFps   = Math.round(fps);
+        var dropPerMin   = (nominalFps === 60) ? 4 : 2;
+        var framesPer10m = nominalFps * 60 * 10 - dropPerMin * 9;
+        var framesPerMin = nominalFps * 60       - dropPerMin;
+
+        var totalFrames = Math.round(seconds * fps);
+        var d = Math.floor(totalFrames / framesPer10m);
+        var m = totalFrames %  framesPer10m;
+        if (m > dropPerMin) {
+            totalFrames = totalFrames + dropPerMin * 9 * d +
+                          dropPerMin * Math.floor((m - dropPerMin) / framesPerMin);
+        } else {
+            totalFrames = totalFrames + dropPerMin * 9 * d;
+        }
+
+        var ff = totalFrames % nominalFps;
+        var ss = Math.floor(totalFrames / nominalFps) % 60;
+        var mm = Math.floor(totalFrames / (nominalFps * 60)) % 60;
+        var hh = Math.floor(totalFrames / (nominalFps * 3600));
+
+        function pad(n) { return n < 10 ? "0" + n : "" + n; }
+        return pad(hh) + ":" + pad(mm) + ":" + pad(ss) + ";" + pad(ff);
+    }
+
     function secondsToTimecode(seconds, fps, isNTSC) {
         if (!fps || fps <= 0) fps = 30;
         var nominalFps = Math.round(fps);
@@ -85,6 +135,8 @@
     return {
         computeSilenceCutZones: computeSilenceCutZones,
         secondsToTimecode:      secondsToTimecode,
+        secondsToDropTimecode:  secondsToDropTimecode,
+        parseZeroPoint:         parseZeroPoint,
         _internals:             { mergeOverlapping: mergeOverlapping }
     };
 }));

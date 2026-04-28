@@ -5,7 +5,8 @@
     "main": "server/index.js",
     "scripts": {
         "server": "node server/index.js",
-        "install-extension": "node scripts/install.js"
+        "install-extension": "node scripts/install.js",
+        "test": "node --test tests/*.test.js"
     },
     "keywords": [
         "premiere-pro",

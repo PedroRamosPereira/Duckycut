@@ -39,6 +39,28 @@ function ticksToSeconds(t) {
     try { return Number(t) / TICKS; } catch(e) { return 0; }
 }
 
+// Mirror of client/js/cutZones.js parseZeroPoint — keep in sync.
+// seq.zeroPoint may be string ticks, number ticks, Time object (PPro 14+), or empty.
+// Number(timeObj) returns NaN — this guards against that.
+function _parseZeroPoint(raw) {
+    if (raw === null || raw === undefined || raw === "") return 0;
+    if (typeof raw === "object") {
+        try {
+            if (typeof raw.seconds === "number" && !isNaN(raw.seconds)) return raw.seconds;
+        } catch (e) {}
+        try {
+            if (raw.ticks !== undefined) {
+                var t = Number(raw.ticks);
+                return isNaN(t) ? 0 : t / TICKS;
+            }
+        } catch (e) {}
+        return 0;
+    }
+    var n = Number(raw);
+    if (isNaN(n)) return 0;
+    return n / TICKS;
+}
+
 function _secondsToTimecodeHost(seconds, fps, isNTSC) {
     if (!fps || fps <= 0) fps = 30;
     var nominalFps = Math.round(fps);
@@ -56,6 +78,34 @@ function _secondsToTimecodeHost(seconds, fps, isNTSC) {
     var hh = Math.floor(totalMin / 60);
     function pad(n) { return n < 10 ? "0" + n : "" + n; }
     return pad(hh) + ":" + pad(mm) + ":" + pad(ss) + ":" + pad(ff);
+}
+
+// Mirror of client/js/cutZones.js secondsToDropTimecode — keep in sync.
+// SMPTE 12M drop-frame: skip 2 (or 4 for 60p) frame labels at start of every
+// minute except every 10th. razor() in DF sequences expects ';' before frames.
+function _secondsToDropTimecodeHost(seconds, fps) {
+    if (!fps || fps <= 0) fps = 29.97;
+    var nominalFps   = Math.round(fps);
+    var dropPerMin   = (nominalFps === 60) ? 4 : 2;
+    var framesPer10m = nominalFps * 60 * 10 - dropPerMin * 9;
+    var framesPerMin = nominalFps * 60       - dropPerMin;
+
+    var totalFrames = Math.round(seconds * fps);
+    var d = Math.floor(totalFrames / framesPer10m);
+    var m = totalFrames %  framesPer10m;
+    if (m > dropPerMin) {
+        totalFrames = totalFrames + dropPerMin * 9 * d +
+                      dropPerMin * Math.floor((m - dropPerMin) / framesPerMin);
+    } else {
+        totalFrames = totalFrames + dropPerMin * 9 * d;
+    }
+
+    var ff = totalFrames % nominalFps;
+    var ss = Math.floor(totalFrames / nominalFps) % 60;
+    var mm = Math.floor(totalFrames / (nominalFps * 60)) % 60;
+    var hh = Math.floor(totalFrames / (nominalFps * 3600));
+    function pad(n) { return n < 10 ? "0" + n : "" + n; }
+    return pad(hh) + ":" + pad(mm) + ":" + pad(ss) + ";" + pad(ff);
 }
 
 function _clipFullyInside(clipStartSec, clipEndSec, zoneStartSec, zoneEndSec, fps) {
@@ -608,18 +658,41 @@ function getSequenceSettings() {
         var numVideoTracks = 0;
         try { numVideoTracks = seq.videoTracks.numTracks; } catch(e) {}
 
+        // ── Drop-frame detection ──────────────────────────────────
+        // PPro exposes drop-frame via videoDisplayFormat enum; values vary
+        // between versions. Known: TIMEDISPLAY_30Drop = 100, TIMEDISPLAY_60Drop = 102.
+        // Fallback: assume DF when NTSC (PPro default for NTSC sequences).
+        var isDropFrame = false;
+        try {
+            var settings2 = seq.getSettings();
+            if (settings2 && typeof settings2.videoDisplayFormat === "number") {
+                isDropFrame = (settings2.videoDisplayFormat === 100 ||
+                               settings2.videoDisplayFormat === 102);
+            }
+        } catch (e) {}
+        if (!isDropFrame && isNTSC) {
+            // Heuristic fallback: NTSC sequences default to DF in PPro.
+            isDropFrame = true;
+        }
+
+        // ── Zero point (sequence start TC offset) ─────────────────
+        var zeroPointSeconds = 0;
+        try { zeroPointSeconds = _parseZeroPoint(seq.zeroPoint); } catch (e) {}
+
         return JSON.stringify({
-            name:            seqName,
-            framerate:       fps,
-            exactFps:        fps,
-            isNTSC:          isNTSC,
-            xmlTimebase:     xmlTimebase,
-            width:           width,
-            height:          height,
-            audioSampleRate: sampleRate,
-            audioTrackCount: numAudioTracks,
-            videoTrackCount: numVideoTracks,
-            durationSeconds: durationSeconds
+            name:             seqName,
+            framerate:        fps,
+            exactFps:         fps,
+            isNTSC:           isNTSC,
+            isDropFrame:      isDropFrame,
+            xmlTimebase:      xmlTimebase,
+            width:            width,
+            height:           height,
+            audioSampleRate:  sampleRate,
+            audioTrackCount:  numAudioTracks,
+            videoTrackCount:  numVideoTracks,
+            durationSeconds:  durationSeconds,
+            zeroPointSeconds: zeroPointSeconds
         });
     } catch (e) {
         return '{"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
@@ -643,8 +716,9 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
             return '{"success":false,"error":"Bad cutZones JSON: ' + e.toString().replace(/"/g, '\\"') + '"}';
         }
         try { opts = eval("(" + optsJson + ")") || {}; } catch (e) {}
-        var fps    = (typeof opts.fps    === "number")  ? opts.fps    : 29.97;
-        var isNTSC = (typeof opts.isNTSC === "boolean") ? opts.isNTSC : false;
+        var fps         = (typeof opts.fps         === "number")  ? opts.fps         : 29.97;
+        var isNTSC      = (typeof opts.isNTSC      === "boolean") ? opts.isNTSC      : false;
+        var isDropFrame = (typeof opts.isDropFrame === "boolean") ? opts.isDropFrame : false;
 
         if (!zones.length) return '{"success":true,"applied":0,"skipped":0}';
 
@@ -662,19 +736,29 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         // razor() uses display timecode (relative to seq.zeroPoint).
         // If the sequence doesn't start at 00:00:00:00, add the offset so
         // the cut lands on the correct frame.
-        var zpSec = 0;
+        // _parseZeroPoint handles string ticks, number ticks, and PPro 14+ Time
+        // objects (where Number(timeObj) returns NaN — the prior bug).
+        var zpRaw  = null;
+        var zpType = "";
+        var zpSec  = 0;
         try {
-            var zpTicks = Number(seq.zeroPoint);
-            if (!isNaN(zpTicks) && zpTicks > 0) zpSec = zpTicks / TICKS;
+            zpRaw  = seq.zeroPoint;
+            zpType = typeof zpRaw;
+            zpSec  = _parseZeroPoint(zpRaw);
         } catch (eZP) {}
+
+        function _zoneToTC(secs) {
+            if (isDropFrame) return _secondsToDropTimecodeHost(secs + zpSec, fps);
+            return _secondsToTimecodeHost(secs + zpSec, fps, isNTSC);
+        }
 
         for (var z = 0; z < zones.length; z++) {
             var zStart = Number(zones[z][0]);
             var zEnd   = Number(zones[z][1]);
             if (!(zEnd > zStart)) { skipped++; continue; }
 
-            var startTC = _secondsToTimecodeHost(zStart + zpSec, fps, isNTSC);
-            var endTC   = _secondsToTimecodeHost(zEnd   + zpSec, fps, isNTSC);
+            var startTC = _zoneToTC(zStart);
+            var endTC   = _zoneToTC(zEnd);
 
             try {
                 for (var v = 0; v < qeSeq.numVideoTracks; v++) {
@@ -732,6 +816,20 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                 diag.push("remove block zone " + z + " failed: " + eRemAll.toString());
                 skipped++;
             }
+        }
+
+        // Always include zeroPoint + DF diagnostic — primary suspect for misalignment.
+        diag.push("zpRaw=" + (zpRaw === null ? "null" : String(zpRaw)));
+        diag.push("zpType=" + zpType);
+        diag.push("zpSec=" + zpSec);
+        diag.push("fps=" + fps + " isNTSC=" + isNTSC + " isDropFrame=" + isDropFrame);
+        if (zones.length > 0) {
+            // zones is sorted descending by start; first entry = latest, last entry = earliest.
+            var firstZone = zones[zones.length - 1];
+            var lastZone  = zones[0];
+            diag.push("firstZoneSec=[" + firstZone[0] + "," + firstZone[1] + "]");
+            diag.push("firstZoneTC=[" + _zoneToTC(firstZone[0]) + "," + _zoneToTC(firstZone[1]) + "]");
+            diag.push("lastZoneTC=["  + _zoneToTC(lastZone[0])  + "," + _zoneToTC(lastZone[1])  + "]");
         }
 
         var result = '{"success":true,"applied":' + applied + ',"skipped":' + skipped;

@@ -1,6 +1,6 @@
 const test   = require("node:test");
 const assert = require("node:assert/strict");
-const { computeSilenceCutZones, secondsToTimecode } = require("../client/js/cutZones.js");
+const { computeSilenceCutZones, secondsToTimecode, jsxStringArg } = require("../client/js/cutZones.js");
 
 test("computeSilenceCutZones: empty input -> empty output", () => {
     assert.deepEqual(computeSilenceCutZones([], 100, {}), []);
@@ -56,4 +56,12 @@ test("secondsToTimecode: hours/minutes wrap correctly", () => {
 
 test("secondsToTimecode: zero seconds", () => {
     assert.equal(secondsToTimecode(0, 25, false), "00:00:00:00");
+});
+
+test("jsxStringArg: escapes backslashes, quotes, and apostrophes for evalScript string args", () => {
+    const value = "C:\\tmp\\duckycut 'quote' \"double\".wav";
+    const arg = jsxStringArg(value);
+
+    assert.equal(JSON.parse(arg), "C:/tmp/duckycut 'quote' \"double\".wav");
+    assert.doesNotMatch(arg, /\\tmp/);
 });

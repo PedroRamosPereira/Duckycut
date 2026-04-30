@@ -86,10 +86,9 @@ Esforço: ~2h. Toca só `client/js/main.js`.
 
 | Item | Onde | Esforço |
 |------|------|---------|
-| Sanitizar paths com `JSON.stringify` em vez de regex `\/g` em `evalScript("...")` calls | `client/js/main.js` várias chamadas | 1h |
+| Auditar chamadas restantes de `evalScript("...")` que aceitam input externo; `exportSequenceAudio` já usa helper `jsxStringArg()` + `JSON.stringify` | `client/js/main.js` | 30min |
 | Warn "project not saved" no início de `runAnalysis` (`getProjectPath` retorna error) — hoje só falha em `savePreset` | `client/js/main.js:runAnalysis` | 30min |
 | Cache `probeResult` por `mediaPath+mtime` pra evitar re-probe | `client/js/main.js` | 1h |
-| README com instruções install + dev + smoke | repo root | 1h |
 | Logs estruturados (níveis info/warn/error) em vez de `console.log` solto | `client/js/main.js` | 1h |
 
 ---

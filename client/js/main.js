@@ -321,6 +321,13 @@
         return new Promise((resolve) => csInterface.evalScript(script, resolve));
     }
 
+    function jsxStringArg(value) {
+        if (window.Duckycut && window.Duckycut.cutZones && window.Duckycut.cutZones.jsxStringArg) {
+            return window.Duckycut.cutZones.jsxStringArg(value);
+        }
+        return JSON.stringify(String(value == null ? "" : value).replace(/\\/g, "/"));
+    }
+
     // ── Refresh Sequence ─────────────────────────────────────────
     function refreshSequence() {
         evalScript("getActiveSequenceInfo()").then((result) => {
@@ -479,7 +486,7 @@
 
                     updateProgress(15, "Queuing sequence render in Adobe Media Encoder...");
 
-                    return evalScript('exportSequenceAudio("' + tempWav.replace(/"/g, '\\"') + '","' + extensionRoot.replace(/"/g, '\\"') + '")');
+                    return evalScript("exportSequenceAudio(" + jsxStringArg(tempWav) + "," + jsxStringArg(extensionRoot) + ")");
                 })
                 .then(function(r) {
                     var res;

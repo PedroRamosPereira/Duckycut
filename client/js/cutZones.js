@@ -81,6 +81,11 @@
         return n / TICKS_PER_SECOND;
     }
 
+    function jsxStringArg(value) {
+        var normalized = String(value == null ? "" : value).replace(/\\/g, "/");
+        return JSON.stringify(normalized);
+    }
+
     // 29.97 / 59.94 drop-frame timecode (SMPTE 12M).
     // Skip 2 (or 4 for 60p) frames at start of every minute except every 10th.
     function secondsToDropTimecode(seconds, fps) {
@@ -137,6 +142,7 @@
         secondsToTimecode:      secondsToTimecode,
         secondsToDropTimecode:  secondsToDropTimecode,
         parseZeroPoint:         parseZeroPoint,
+        jsxStringArg:           jsxStringArg,
         _internals:             { mergeOverlapping: mergeOverlapping }
     };
 }));

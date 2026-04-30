@@ -20,6 +20,9 @@
     let silenceDetector = null;
     let nodeRequire     = null;
     let modulesError    = "";
+    let nodeFs          = null;
+    let nodePath        = null;
+    let nodeOs          = null;
 
     // ── Load Node.js modules ─────────────────────────────────────
     try {
@@ -31,11 +34,12 @@
 
     if (nodeRequire) {
         try {
-            var nodePath = nodeRequire("path");
+            nodePath = nodeRequire("path");
+            nodeFs   = nodeRequire("fs");
+            nodeOs   = nodeRequire("os");
             var serverDir = null;
 
             if (typeof __dirname !== "undefined" && __dirname) {
-                var nodeFs = nodeRequire("fs");
                 var c1 = nodePath.resolve(__dirname, "..", "server");
                 var c2 = nodePath.resolve(__dirname, "server");
                 if (nodeFs.existsSync(c1)) serverDir = c1;
@@ -696,12 +700,11 @@
         // Snap each boundary to a frame so the host's TC conversion can't shift
         // it by ±½ frame (asymmetric round of zone start vs end). Drop zones
         // that collapse to zero width after snapping.
-        const cutZones = [];
-        for (let i = 0; i < rawCuts.length; i++) {
-            const s = snapSecondsToFrame(rawCuts[i][0], fps, isNTSC);
-            const e = snapSecondsToFrame(rawCuts[i][1], fps, isNTSC);
-            if (e > s) cutZones.push([s, e]);
-        }
+        const cutZones = (window.Duckycut && window.Duckycut.cutZones && window.Duckycut.cutZones.prepareCutZonesForApply)
+            ? window.Duckycut.cutZones.prepareCutZonesForApply(rawCuts, fps, isNTSC)
+            : mergeOverlappingIntervals(rawCuts.map(function (z) {
+                return [snapSecondsToFrame(z[0], fps, isNTSC), snapSecondsToFrame(z[1], fps, isNTSC)];
+            }).filter(function (z) { return z[1] > z[0]; }));
 
         if (cutZones.length === 0) {
             setStatus("Nothing to cut — keep zones cover the whole sequence", "info");
@@ -710,12 +713,24 @@
 
         updateProgress(40, "Razoring " + cutZones.length + " zones...");
 
-        const zonesArg = JSON.stringify(JSON.stringify(cutZones));
+        if (!nodeFs || !nodePath || !nodeOs) {
+            setStatus("Cut error: Node.js File I/O unavailable", "error");
+            hideProgress(); elBtnApply.disabled = false; return;
+        }
+
+        const cutZonesPath = nodePath.join(nodeOs.tmpdir(), "duckycut_cuts_" + Date.now() + ".json");
+        try {
+            nodeFs.writeFileSync(cutZonesPath, JSON.stringify(cutZones), "utf8");
+        } catch (eWrite) {
+            setStatus("Cut error: failed to write temp cuts file: " + eWrite.message, "error");
+            hideProgress(); elBtnApply.disabled = false; return;
+        }
+
         const optsArg  = JSON.stringify(JSON.stringify({
             fps: fps, isNTSC: isNTSC, isDropFrame: isDropFrame
         }));
 
-        evalScript("applyCutsInPlace(" + zonesArg + ", " + optsArg + ")").then(function (raw) {
+        evalScript("applyCutsInPlaceFile(" + jsxStringArg(cutZonesPath) + ", " + optsArg + ")").then(function (raw) {
             try {
                 const data = JSON.parse(raw);
                 if (data.success) {
@@ -729,6 +744,7 @@
             } catch (e) {
                 setStatus("Cut parse error: " + e.message + " :: raw=" + raw, "error");
             }
+            try { nodeFs.unlinkSync(cutZonesPath); } catch (eUnlink) {}
             hideProgress(); elBtnApply.disabled = false;
         });
     }

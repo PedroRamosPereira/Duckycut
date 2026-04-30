@@ -39,6 +39,19 @@ function ticksToSeconds(t) {
     try { return Number(t) / TICKS; } catch(e) { return 0; }
 }
 
+function _timeToSecondsPreferTicks(t) {
+    try {
+        if (t && t.ticks !== undefined) {
+            var ticks = Number(t.ticks);
+            if (!isNaN(ticks)) return ticks / TICKS;
+        }
+    } catch (e1) {}
+    try {
+        if (t && typeof t.seconds === "number") return t.seconds;
+    } catch (e2) {}
+    return 0;
+}
+
 // Mirror of client/js/cutZones.js parseZeroPoint — keep in sync.
 // seq.zeroPoint may be string ticks, number ticks, Time object (PPro 14+), or empty.
 // Number(timeObj) returns NaN — this guards against that.
@@ -772,8 +785,8 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                             var vClip = vTrack.clips[vci];
                             if (!vClip) continue;
                             var cs = 0, ce = 0;
-                            try { cs = vClip.start.seconds; } catch(eS) {}
-                            try { ce = vClip.end.seconds;   } catch(eE) {}
+                            cs = _timeToSecondsPreferTicks(vClip.start);
+                            ce = _timeToSecondsPreferTicks(vClip.end);
                             if (_clipFullyInside(cs, ce, zStart, zEnd, fps)) {
                                 vClip.remove(true, true);
                             }
@@ -787,8 +800,8 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                             var aClip = aTrack.clips[aci];
                             if (!aClip) continue;
                             var as = 0, ae = 0;
-                            try { as = aClip.start.seconds; } catch(eS2) {}
-                            try { ae = aClip.end.seconds;   } catch(eE2) {}
+                            as = _timeToSecondsPreferTicks(aClip.start);
+                            ae = _timeToSecondsPreferTicks(aClip.end);
                             if (_clipFullyInside(as, ae, zStart, zEnd, fps)) {
                                 aClip.remove(true, true);
                             }
@@ -830,6 +843,20 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         return result;
     } catch (e) {
         return '{"success":false,"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
+    }
+}
+
+function applyCutsInPlaceFile(cutZonesPath, optsJson) {
+    try {
+        var cleanPath = String(cutZonesPath).replace(/^file:\/{2,3}/i, "").replace(/\\/g, "/");
+        var f = new File(cleanPath);
+        if (!f.exists) return '{"success":false,"error":"Cut zones file not found"}';
+        if (!f.open("r")) return '{"success":false,"error":"Unable to open cut zones file"}';
+        var cutZonesJson = f.read();
+        try { f.close(); } catch (eClose) {}
+        return applyCutsInPlace(cutZonesJson, optsJson);
+    } catch (e) {
+        return '{"success":false,"error":"Cut zones file read failed: ' + e.toString().replace(/"/g, '\\"') + '"}';
     }
 }
 

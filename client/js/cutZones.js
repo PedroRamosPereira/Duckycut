@@ -59,6 +59,29 @@
         return mergeOverlapping(valid);
     }
 
+    function snapSecondsToFrame(seconds, fps, isNTSC) {
+        if (!fps || fps <= 0) fps = 29.97;
+        var nominalFps = Math.round(fps);
+        var totalFrames;
+        if (isNTSC) {
+            totalFrames = Math.round(seconds * nominalFps * 1000 / 1001);
+            return totalFrames * 1001 / (1000 * nominalFps);
+        }
+        totalFrames = Math.round(seconds * fps);
+        return totalFrames / fps;
+    }
+
+    function prepareCutZonesForApply(rawCuts, fps, isNTSC) {
+        var snapped = [];
+        if (!rawCuts) return snapped;
+        for (var i = 0; i < rawCuts.length; i++) {
+            var s = snapSecondsToFrame(rawCuts[i][0], fps, isNTSC);
+            var e = snapSecondsToFrame(rawCuts[i][1], fps, isNTSC);
+            if (e > s) snapped.push([s, e]);
+        }
+        return mergeOverlapping(snapped);
+    }
+
     var TICKS_PER_SECOND = 254016000000;
 
     // seq.zeroPoint can be: string ticks (PPro pre-14), number ticks,
@@ -148,6 +171,7 @@
 
     return {
         computeSilenceCutZones: computeSilenceCutZones,
+        prepareCutZonesForApply: prepareCutZonesForApply,
         secondsToTimecode:      secondsToTimecode,
         secondsToDropTimecode:  secondsToDropTimecode,
         parseZeroPoint:         parseZeroPoint,

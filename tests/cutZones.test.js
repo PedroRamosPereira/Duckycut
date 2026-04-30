@@ -1,6 +1,12 @@
 const test   = require("node:test");
 const assert = require("node:assert/strict");
-const { computeSilenceCutZones, secondsToTimecode, jsxStringArg, getProjectPathError } = require("../client/js/cutZones.js");
+const {
+    computeSilenceCutZones,
+    prepareCutZonesForApply,
+    secondsToTimecode,
+    jsxStringArg,
+    getProjectPathError,
+} = require("../client/js/cutZones.js");
 
 test("computeSilenceCutZones: empty input -> empty output", () => {
     assert.deepEqual(computeSilenceCutZones([], 100, {}), []);
@@ -78,4 +84,16 @@ test("getProjectPathError: accepts saved project response", () => {
         getProjectPathError('{"projectPath":"C:/p/edit.prproj","projectDir":"C:/p"}'),
         ""
     );
+});
+
+test("prepareCutZonesForApply: merges overlapping cut zones after frame snap", () => {
+    const out = prepareCutZonesForApply([[0, 2.02], [1.98, 4]], 25, false);
+
+    assert.deepEqual(out, [[0, 4]]);
+});
+
+test("prepareCutZonesForApply: drops zones collapsed by frame snap", () => {
+    const out = prepareCutZonesForApply([[1.001, 1.002], [2, 2.08]], 25, false);
+
+    assert.deepEqual(out, [[2, 2.08]]);
 });

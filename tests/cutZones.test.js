@@ -1,6 +1,6 @@
 const test   = require("node:test");
 const assert = require("node:assert/strict");
-const { computeSilenceCutZones, secondsToTimecode, jsxStringArg } = require("../client/js/cutZones.js");
+const { computeSilenceCutZones, secondsToTimecode, jsxStringArg, getProjectPathError } = require("../client/js/cutZones.js");
 
 test("computeSilenceCutZones: empty input -> empty output", () => {
     assert.deepEqual(computeSilenceCutZones([], 100, {}), []);
@@ -64,4 +64,18 @@ test("jsxStringArg: escapes backslashes, quotes, and apostrophes for evalScript 
 
     assert.equal(JSON.parse(arg), "C:/tmp/duckycut 'quote' \"double\".wav");
     assert.doesNotMatch(arg, /\\tmp/);
+});
+
+test("getProjectPathError: warns when Premiere project is not saved", () => {
+    assert.equal(
+        getProjectPathError('{"error":"Project not saved"}'),
+        "Save the Premiere project before running analysis"
+    );
+});
+
+test("getProjectPathError: accepts saved project response", () => {
+    assert.equal(
+        getProjectPathError('{"projectPath":"C:/p/edit.prproj","projectDir":"C:/p"}'),
+        ""
+    );
 });

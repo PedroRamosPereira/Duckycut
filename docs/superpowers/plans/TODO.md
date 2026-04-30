@@ -82,26 +82,8 @@ Esforço: ~2h. Toca só `client/js/main.js`.
 
 ---
 
-## 4. Hardening (baixa prioridade, sem dependência alinhamento)
-
-| Item | Onde | Esforço |
-|------|------|---------|
-| Auditar chamadas restantes de `evalScript("...")` que aceitam input externo; `exportSequenceAudio` já usa helper `jsxStringArg()` + `JSON.stringify` | `client/js/main.js` | 30min |
-| Warn "project not saved" no início de `runAnalysis` (`getProjectPath` retorna error) — hoje só falha em `savePreset` | `client/js/main.js:runAnalysis` | 30min |
-| Cache `probeResult` por `mediaPath+mtime` pra evitar re-probe | `client/js/main.js` | 1h |
-| Logs estruturados (níveis info/warn/error) em vez de `console.log` solto | `client/js/main.js` | 1h |
-
----
-
-## 5. Considerar / talvez nunca
-
-- **i18n** — UI hoje em inglês fixo. Pequena base. Pula até ter user feedback.
-- **Auto-load preset** ao abrir painel se existe `duckycut_preset_*.json` no projectDir. Pequeno UX win.
-- **Per-clip media metadata** (`mediaDurationSeconds`, `mediaFps`, `srcChannels`) em `getFullSequenceClips`. Era P3 do plano XML antigo. Hoje **não usado** porque XML flow morreu. Re-considerar SE algum dia voltar fluxo XML ou se panel precisar dessa info.
-
----
-
-## 6. Removidos / não fazer
+## 4. Removidos / não fazer
 
 - ~~Tudo de `2026-04-17-correcao-desalinhamento.md` Tasks 2-13~~ — XML flow removido (`f814073`); fixes não aplicam mais ao panel. `server/xmlGenerator.js` ainda existe pro server HTTP standalone (`server/index.js`), mas esse caminho não é o user-facing.
 - ~~Tasks 1-4, 6 do plano `2026-04-28`~~ — implementado em `b3954f4..5d60ab8`.
+- ~~Hardening baixo impacto~~ — README criado, `npm test` corrigido para Windows, `exportSequenceAudio` usa `JSON.stringify` nos paths e `runAnalysis` bloqueia projeto não salvo. Cache por `mediaPath+mtime`, i18n, auto-load de preset, logs estruturados e per-clip metadata não são pertinentes ao fluxo user-facing atual.

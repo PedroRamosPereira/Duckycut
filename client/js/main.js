@@ -328,6 +328,20 @@
         return JSON.stringify(String(value == null ? "" : value).replace(/\\/g, "/"));
     }
 
+    function getProjectPathError(raw) {
+        if (window.Duckycut && window.Duckycut.cutZones && window.Duckycut.cutZones.getProjectPathError) {
+            return window.Duckycut.cutZones.getProjectPathError(raw);
+        }
+        try {
+            var parsed = JSON.parse(raw || "{}");
+            return parsed && parsed.error === "Project not saved"
+                ? "Save the Premiere project before running analysis"
+                : "";
+        } catch (e) {
+            return "";
+        }
+    }
+
     // ── Refresh Sequence ─────────────────────────────────────────
     function refreshSequence() {
         evalScript("getActiveSequenceInfo()").then((result) => {
@@ -443,9 +457,17 @@
         showProgress("Reading sequence tracks...");
 
         Promise.all([
+            evalScript("getProjectPath()"),
             evalScript("getFullSequenceClips()"),
             evalScript("getSequenceSettings()"),
-        ]).then(function([clipsRaw, settingsRaw]) {
+        ]).then(function([projectRaw, clipsRaw, settingsRaw]) {
+            var projectError = getProjectPathError(projectRaw);
+            if (projectError) {
+                setStatus(projectError, "error");
+                hideProgress(); elBtnAnalyze.disabled = false;
+                return;
+            }
+
             try {
                 var parsed = JSON.parse(clipsRaw);
                 sequenceClips = Array.isArray(parsed) ? parsed : null;

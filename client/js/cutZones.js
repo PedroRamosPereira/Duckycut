@@ -86,6 +86,15 @@
         return JSON.stringify(normalized);
     }
 
+    function getProjectPathError(raw) {
+        var parsed = null;
+        try { parsed = JSON.parse(raw || "{}"); } catch (e) { parsed = null; }
+        if (parsed && parsed.error === "Project not saved") {
+            return "Save the Premiere project before running analysis";
+        }
+        return "";
+    }
+
     // 29.97 / 59.94 drop-frame timecode (SMPTE 12M).
     // Skip 2 (or 4 for 60p) frames at start of every minute except every 10th.
     function secondsToDropTimecode(seconds, fps) {
@@ -143,6 +152,7 @@
         secondsToDropTimecode:  secondsToDropTimecode,
         parseZeroPoint:         parseZeroPoint,
         jsxStringArg:           jsxStringArg,
+        getProjectPathError:    getProjectPathError,
         _internals:             { mergeOverlapping: mergeOverlapping }
     };
 }));

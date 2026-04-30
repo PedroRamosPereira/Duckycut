@@ -35,13 +35,13 @@ Código dos commits `b3954f4..28deb7e` (parseZeroPoint, drop-frame TC, snap-to-f
 | D   |        |       |             |             |                 |                                |
 ```
 
-Critério aceite global: ≤ 1 frame em todas. Se Seq D falhar, ver bloco "AME WAV start" abaixo antes de mexer em parseZeroPoint.
+Critério aceite global: ≤ 1 frame em todas. Se Seq D falhar, ver bloco "WAV start" abaixo antes de mexer em parseZeroPoint.
 
 ---
 
-## 2. Validar que AME WAV começa em zeroPoint (diagnóstico H5)
+## 2. Validar que WAV direto começa em zeroPoint (diagnóstico H5)
 
-Premissa atual: `encodeSequence(seq, ENCODE_ENTIRE)` exporta `[seq.zeroPoint, seq.end]` e WAV t=0 == zeroPoint. Não testado empiricamente — algumas versões PPro podem ignorar e exportar absoluto.
+Premissa atual: `exportAsMediaDirect(seq, ENCODE_ENTIRE)` exporta `[seq.zeroPoint, seq.end]` e WAV t=0 == zeroPoint. Não testado empiricamente — algumas versões PPro podem ignorar e exportar absoluto.
 
 **Validação:** adicionar log temporário em `client/js/main.js` `runDetection`, ANTES de `analysisResult = result`:
 
@@ -55,7 +55,7 @@ console.log("[Duckycut] WAV duration =", result.mediaDuration,
 
 Rodar Seq D (zp=1h, duração 30s):
 - WAV ≈ 30 → premissa OK
-- WAV ≈ 3630 → AME ignora ENCODE_ENTIRE → bug separado, abrir issue dedicada
+- WAV ≈ 3630 → export direto ignora ENCODE_ENTIRE → bug separado, abrir issue dedicada
 
 Remover log depois.
 
@@ -68,15 +68,15 @@ Remover log depois.
 - Se usuário seleciona "Audio 2" que tem música, threshold sai calibrado pra música em vez da voz que ele realmente quer cortar
 - Não respeita mute/efeitos da sequência
 
-**Fix proposto:** reutilizar pipeline AME do `runAnalysis`. Extrair helper `ensureMixdown(selectedIndices) → Promise<wavPath>`:
+**Fix proposto:** reutilizar pipeline de export direto do `runAnalysis`. Extrair helper `ensureMixdown(selectedIndices) → Promise<wavPath>`:
 1. Mute tracks não selecionadas
-2. `exportSequenceAudio` → poll stable size
+2. `exportSequenceAudio` → valida arquivo gerado
 3. Restore mutes
 4. Resolve com `tempWav`
 
 Então `runProbe` chama `ensureMixdown([selectedFirst])` → `probeAudio(tempWav)` em vez do `getAudioTrackMediaPath` direto.
 
-Custo: probe fica mais lento (espera AME). Vale: threshold passa a refletir mix real.
+Custo: probe fica mais lento (espera export do Premiere). Vale: threshold passa a refletir mix real.
 
 Esforço: ~2h. Toca só `client/js/main.js`.
 

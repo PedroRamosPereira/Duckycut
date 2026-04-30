@@ -7,11 +7,9 @@
  *      channel; generator no longer duplicates A1 across all tracks.
  *   3. Framerate: getSequenceSettings() reads timebase directly from the
  *      sequence — no hardcoded 29.97 fallback unless the API truly fails.
- *   4. Audio pre-render: when Analyze is clicked, the panel asks Premiere to
- *      export a WAV mixdown of the user-selected audio tracks. FFmpeg then
- *      analyses that rendered file instead of the raw source — giving accurate
- *      silence detection even when audio lives on multiple tracks or is mixed
- *      from clips at different source offsets.
+ *   4. Audio pre-render: when Analyze is clicked, the panel builds an FFmpeg
+ *      mixdown from only the checked audio tracks. FFmpeg then analyses that
+ *      rendered file in sequence time, so unchecked tracks cannot affect cuts.
  */
 
 (function () {
@@ -443,6 +441,27 @@
         return evalScript("restoreAudioTrackMutes(" + JSON.stringify(JSON.stringify(savedStates)) + ")");
     }
 
+    function buildSelectedAudioTracks(clips, selectedIdx) {
+        var tracks = selectedIdx.map(function(idx) {
+            return { index: idx, clips: [] };
+        });
+        var byIndex = {};
+        tracks.forEach(function(track) { byIndex[track.index] = track; });
+
+        (clips || []).forEach(function(clip) {
+            if (!clip || clip.trackType !== "audio" || !byIndex.hasOwnProperty(clip.trackIndex)) return;
+            byIndex[clip.trackIndex].clips.push({
+                mediaPath: clip.mediaPath,
+                seqStart:  clip.start,
+                seqEnd:    clip.end,
+                srcIn:     typeof clip.mediaIn  === "number" ? clip.mediaIn  : 0,
+                srcOut:    typeof clip.mediaOut === "number" ? clip.mediaOut : 0,
+            });
+        });
+
+        return tracks.filter(function(track) { return track.clips.length > 0; });
+    }
+
     function runAnalysis() {
         if (!sequenceInfo) { setStatus("No active sequence", "error"); return; }
         if (!silenceDetector) { setStatus("Silence detector not loaded", "error"); return; }
@@ -483,152 +502,44 @@
             var threshold   = computeThreshold(elAggressiveness.value);
             var minDuration = parseInt(elMinDuration.value, 10) / 1000;
 
-            var fs2 = nodeRequire("fs");
-            var os2 = nodeRequire("os");
-            var tempWav = (os2.tmpdir() + "/duckycut_temp_mixdown_" + Date.now() + ".wav")
-                            .replace(/\\/g, "/");
-            var extensionRoot = csInterface.getSystemPath(SystemPath.EXTENSION)
-                                    .replace(/\\/g, "/");
+            var selectedTracks = buildSelectedAudioTracks(sequenceClips, selectedIdx);
+            if (selectedTracks.length === 0) {
+                setStatus("Selected audio tracks have no readable clips", "error");
+                hideProgress(); elBtnAnalyze.disabled = false;
+                return;
+            }
 
-            var savedMuteStates = null;
+            console.log("[Duckycut] Selected audio tracks for analysis:", JSON.stringify(selectedTracks.map(function(track) {
+                return { index: track.index, clips: track.clips.length };
+            })));
 
-            updateProgress(12, "Muting unselected audio tracks...");
+            updateProgress(15, "Mixing selected audio tracks...");
 
-            evalScript("muteAudioTracks(" + JSON.stringify(JSON.stringify(selectedIdx)) + ")")
-                .then(function(muteRaw) {
-                    try {
-                        var mr = JSON.parse(muteRaw);
-                        if (!mr.success) {
-                            setStatus("Failed to mute tracks: " + (mr.error || "unknown"), "error");
-                            hideProgress(); elBtnAnalyze.disabled = false;
-                            return Promise.reject(new Error("mute failed"));
+            silenceDetector.detectSilenceFromSequence(selectedTracks, threshold, minDuration)
+                .then(function (result) {
+                    analysisResult = result;
+                    updateProgress(80, "Applying Clean Cut algorithm...");
+
+                    keepZones = computeCleanCutZones(
+                        result.silenceIntervals,
+                        result.mediaDuration,
+                        {
+                            paddingIn:       parseInt(elPaddingIn.value, 10)       / 1000,
+                            paddingOut:      parseInt(elPaddingOut.value, 10)      / 1000,
+                            minClipDuration: parseInt(elMinClipDuration.value, 10) / 1000,
+                            minGapDuration:  parseInt(elMinGapFill.value, 10)      / 1000,
                         }
-                        savedMuteStates = mr.savedStates;
-                    } catch(e) {}
+                    );
 
-                    updateProgress(15, "Queuing sequence render in Adobe Media Encoder...");
-
-                    return evalScript("exportSequenceAudio(" + jsxStringArg(tempWav) + "," + jsxStringArg(extensionRoot) + ")");
+                    updateProgress(100, "Analysis complete!");
+                    showResults(result, keepZones, true);
+                    setStatus("Analysis complete — threshold: " + threshold + " dB (selected tracks only)", "success");
+                    hideProgress(); elBtnAnalyze.disabled = false;
                 })
-                .then(function(r) {
-                    var res;
-                    try { res = JSON.parse(r); } catch (e) { res = {}; }
-
-                    if (!res.success) {
-                        restoreMutes(savedMuteStates).then(function() {
-                            setStatus("Mixdown failed: " + (res.error || "unknown"), "error");
-                            hideProgress(); elBtnAnalyze.disabled = false;
-                        });
-                        return;
-                    }
-
-                    var pollInterval   = 500;
-                    var pollTimeout    = 180000;
-                    var stableSampleMs = 300;
-                    var stableNeeded   = 4;
-                    var elapsed        = 0;
-
-                    function waitForFile() {
-                        if (fs2.existsSync(tempWav)) {
-                            waitForStableSize();
-                            return;
-                        }
-                        elapsed += pollInterval;
-                        if (elapsed >= pollTimeout) {
-                            restoreMutes(savedMuteStates).then(function() {
-                                setStatus("Timeout: AME didn't produce the WAV in 3 min", "error");
-                                hideProgress(); elBtnAnalyze.disabled = false;
-                            });
-                            return;
-                        }
-                        updateProgress(
-                            15 + Math.min(8, Math.round(elapsed / pollTimeout * 8)),
-                            "Waiting for Adobe Media Encoder to start..."
-                        );
-                        setTimeout(waitForFile, pollInterval);
-                    }
-
-                    function waitForStableSize() {
-                        var lastSize    = -1;
-                        var stableCount = 0;
-
-                        function sample() {
-                            var size = -1;
-                            try { size = fs2.statSync(tempWav).size; } catch (e) {}
-
-                            if (size > 0 && size === lastSize) {
-                                stableCount++;
-                                if (stableCount >= stableNeeded) {
-                                    restoreMutes(savedMuteStates).then(function() {
-                                        runDetection(tempWav);
-                                    });
-                                    return;
-                                }
-                            } else {
-                                stableCount = 0;
-                            }
-                            lastSize = size;
-
-                            elapsed += stableSampleMs;
-                            if (elapsed >= pollTimeout) {
-                                restoreMutes(savedMuteStates).then(function() {
-                                    setStatus("Timeout waiting for AME render to finish", "error");
-                                    hideProgress(); elBtnAnalyze.disabled = false;
-                                });
-                                return;
-                            }
-
-                            var sizeMB = size > 0 ? (Math.round(size / 1024 / 1024 * 10) / 10) : 0;
-                            updateProgress(
-                                23 + Math.min(2, stableCount),
-                                "Rendering in Adobe Media Encoder... " +
-                                    (sizeMB > 0 ? sizeMB + " MB" : "")
-                            );
-                            setTimeout(sample, stableSampleMs);
-                        }
-                        sample();
-                    }
-
-                    waitForFile();
-                })
-                .catch(function(err) {
-                    restoreMutes(savedMuteStates);
-                    setStatus("Analysis error: " + (err.message || "unknown"), "error");
+                .catch(function (err) {
+                    setStatus("FFmpeg error: " + err.message, "error");
                     hideProgress(); elBtnAnalyze.disabled = false;
                 });
-
-            function runDetection(audioPath) {
-                updateProgress(25, "Running FFmpeg silence detection (rendered mixdown)...");
-
-                silenceDetector.detectSilence(audioPath, threshold, minDuration)
-                    .then(function (result) {
-                        analysisResult = result;
-                        updateProgress(80, "Applying Clean Cut algorithm...");
-
-                        keepZones = computeCleanCutZones(
-                            result.silenceIntervals,
-                            result.mediaDuration,
-                            {
-                                paddingIn:       parseInt(elPaddingIn.value, 10)       / 1000,
-                                paddingOut:      parseInt(elPaddingOut.value, 10)      / 1000,
-                                minClipDuration: parseInt(elMinClipDuration.value, 10) / 1000,
-                                minGapDuration:  parseInt(elMinGapFill.value, 10)      / 1000,
-                            }
-                        );
-
-                        try { nodeRequire("fs").unlinkSync(audioPath); } catch (e) {}
-
-                        updateProgress(100, "Analysis complete!");
-                        showResults(result, keepZones, true);
-                        setStatus("Analysis complete — threshold: " + threshold + " dB (rendered mixdown)", "success");
-                        hideProgress(); elBtnAnalyze.disabled = false;
-                    })
-                    .catch(function (err) {
-                        try { nodeRequire("fs").unlinkSync(audioPath); } catch (e) {}
-                        setStatus("FFmpeg error: " + err.message, "error");
-                        hideProgress(); elBtnAnalyze.disabled = false;
-                    });
-            }
         });
     }
 

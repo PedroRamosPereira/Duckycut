@@ -5,7 +5,7 @@ Extensao CEP para Adobe Premiere Pro que detecta silencio com FFmpeg e aplica co
 ## Requisitos
 
 - Adobe Premiere Pro com suporte a CEP (`PPRO 14+`).
-- Adobe Media Encoder instalado para renderizar o mixdown WAV da sequencia.
+- Preset WAV disponivel no Premiere/MediaCore para renderizar o mixdown WAV da sequencia.
 - FFmpeg disponivel no `PATH`.
 - Node.js para instalar a extensao em modo desenvolvimento e rodar testes.
 
@@ -31,7 +31,7 @@ No Windows, habilite extensoes CEP sem assinatura criando `PlayerDebugMode=1` em
 npm test
 ```
 
-Os testes automatizados cobrem matematica de timecode, zeroPoint e cut zones. Smoke tests reais ainda precisam rodar no Premiere, porque CEP, QE DOM e AME dependem do aplicativo Adobe.
+Os testes automatizados cobrem matematica de timecode, zeroPoint, cut zones e o caminho de export direto. Smoke tests reais ainda precisam rodar no Premiere, porque CEP, QE DOM e `exportAsMediaDirect` dependem do aplicativo Adobe.
 
 ## Smoke Test Manual Minimo
 

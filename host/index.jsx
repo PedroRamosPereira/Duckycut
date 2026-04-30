@@ -401,12 +401,9 @@ function getAllMediaPaths() {
 }
 
 /**
- * Exports the active sequence audio (all tracks, with effects) to a WAV file
- * by queuing a render in Adobe Media Encoder (AME).
- *
- * Why AME (not exportAsMediaDirect): AME runs out-of-process, so Premiere's UI
- * stays responsive while the render happens — matches fireCut's behaviour. The
- * panel polls for the output WAV on disk to know when the render is done.
+ * Exports the active sequence audio (with current track mute states) to a WAV
+ * file directly through Premiere. The panel mutes unselected tracks before
+ * calling this, so the exported mixdown reflects only the tracks under analysis.
  *
  * Range is ENCODE_ENTIRE (not ENCODE_IN_TO_OUT) so existing sequence In/Out
  * marks don't silently truncate the export and shift every detected timestamp.
@@ -543,34 +540,21 @@ function exportSequenceAudio(outputPath, extensionPath) {
             return '{"success":false,"error":"' + msg + '"}';
         }
 
-        // ── Queue render through Adobe Media Encoder ────────────────
-        // encodeSequence(sequence, outputPath, presetPath,
-        //                encodeType[0=ENTIRE,1=IN_TO_OUT,2=WORKAREA],
-        //                removeUponCompletion[0|1], startImmediately[0|1])
-        try { app.encoder.launchEncoder(); } catch (eLaunch) {}
-
-        var jobID = "";
+        // ── Export directly through Premiere ────────────────────────
+        // exportAsMediaDirect(sequence, outputPath, presetPath, encodeType)
+        // encodeType 0 = ENCODE_ENTIRE, ignoring sequence In/Out markers.
         try {
-            jobID = app.encoder.encodeSequence(
-                seq,
+            seq.exportAsMediaDirect(
                 outNorm,
                 presetPath,
-                0,   // ENCODE_ENTIRE — ignore any In/Out marks on the sequence
-                1,   // remove job from AME queue after it completes
-                1    // start batch immediately
+                0    // ENCODE_ENTIRE — ignore any In/Out marks on the sequence
             );
-        } catch (encErr) {
-            return '{"success":false,"error":"encodeSequence failed: ' + encErr.toString().replace(/"/g, '\\"') + '"}';
+        } catch (exportErr) {
+            return '{"success":false,"error":"exportAsMediaDirect failed: ' + exportErr.toString().replace(/"/g, '\\"') + '"}';
         }
-
-        // Defensive: on some PPro versions encodeSequence queues but doesn't
-        // start the batch unless startBatch() is called explicitly.
-        try { app.encoder.startBatch(); } catch (eStart) {}
 
         return JSON.stringify({
             success: true,
-            queued:  true,
-            jobID:   String(jobID || ""),
             path:    cleanOutPath,
             preset:  presetPath.replace(/\\/g, "/")
         });
@@ -874,7 +858,9 @@ function muteAudioTracks(selectedIndicesJson) {
                 for (var j = 0; j < selectedIndices.length; j++) {
                     if (selectedIndices[j] === i) { isSelected = true; break; }
                 }
-                if (!isSelected) {
+                if (isSelected) {
+                    try { track.setMute(false); } catch (e) {}
+                } else {
                     try { track.setMute(true); } catch (e) {}
                 }
             } catch (e) {}

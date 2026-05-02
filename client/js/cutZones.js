@@ -84,6 +84,42 @@
 
     var TICKS_PER_SECOND = 254016000000;
 
+    function secondsToTicksString(seconds) {
+        return String(Math.round(Number(seconds) * TICKS_PER_SECOND));
+    }
+
+    function prepareTickCutZonesForApply(rawCuts, fps, isNTSC) {
+        var snapped = [];
+        if (rawCuts) {
+            for (var r = 0; r < rawCuts.length; r++) {
+                var s = snapSecondsToFrame(rawCuts[r][0], fps, isNTSC);
+                var e = snapSecondsToFrame(rawCuts[r][1], fps, isNTSC);
+                if (e > s) snapped.push([s, e]);
+            }
+        }
+        var out = [];
+        for (var i = 0; i < snapped.length; i++) {
+            out.push({
+                startSeconds: snapped[i][0],
+                endSeconds: snapped[i][1],
+                startTicks: secondsToTicksString(snapped[i][0]),
+                endTicks: secondsToTicksString(snapped[i][1])
+            });
+        }
+        return out;
+    }
+
+    function chunkArray(items, size) {
+        var chunkSize = Number(size) || 1;
+        if (chunkSize < 1) chunkSize = 1;
+        var out = [];
+        if (!items) return out;
+        for (var i = 0; i < items.length; i += chunkSize) {
+            out.push(items.slice(i, i + chunkSize));
+        }
+        return out;
+    }
+
     // seq.zeroPoint can be: string ticks (PPro pre-14), number ticks,
     // Time object with .seconds/.ticks (PPro 14+), or null/empty.
     // Number(timeObject) returns NaN, which is the bug this guards against.
@@ -196,6 +232,9 @@
     return {
         computeSilenceCutZones: computeSilenceCutZones,
         prepareCutZonesForApply: prepareCutZonesForApply,
+        secondsToTicksString:          secondsToTicksString,
+        prepareTickCutZonesForApply:  prepareTickCutZonesForApply,
+        chunkArray:                   chunkArray,
         offsetIntervals:          offsetIntervals,
         intersectIntervalsWithRange: intersectIntervalsWithRange,
         secondsToTimecode:      secondsToTimecode,

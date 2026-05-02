@@ -112,3 +112,32 @@ test("intersectIntervalsWithRange clamps zones to In-Out", () => {
     );
     assert.deepEqual(zones, [[10, 12], [15, 20]]);
 });
+
+test("prepareTickCutZonesForApply converts snapped cut zones to integer ticks", () => {
+    const zones = require("../client/js/cutZones.js").prepareTickCutZonesForApply(
+        [[1, 2], [2.00001, 3]],
+        25,
+        false
+    );
+
+    assert.deepEqual(zones, [
+        {
+            startSeconds: 1,
+            endSeconds: 2,
+            startTicks: "254016000000",
+            endTicks: "508032000000"
+        },
+        {
+            startSeconds: 2,
+            endSeconds: 3,
+            startTicks: "508032000000",
+            endTicks: "762048000000"
+        }
+    ]);
+});
+
+test("chunkArray splits zones into deterministic chunk sizes", () => {
+    const zones = [1, 2, 3, 4, 5];
+    const chunks = require("../client/js/cutZones.js").chunkArray(zones, 2);
+    assert.deepEqual(chunks, [[1, 2], [3, 4], [5]]);
+});

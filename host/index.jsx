@@ -769,13 +769,6 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         var fps         = (typeof opts.fps         === "number")  ? opts.fps         : 29.97;
         var isNTSC      = (typeof opts.isNTSC      === "boolean") ? opts.isNTSC      : false;
         var isDropFrame = (typeof opts.isDropFrame === "boolean") ? opts.isDropFrame : false;
-        var rangeStart = null;
-        var rangeEnd = null;
-        if (opts.range && typeof opts.range.startSeconds === "number" && typeof opts.range.endSeconds === "number" && opts.range.endSeconds > opts.range.startSeconds) {
-            rangeStart = opts.range.startSeconds;
-            rangeEnd = opts.range.endSeconds;
-        }
-
         if (!zones.length) return '{"success":true,"applied":0,"skipped":0}';
 
         zones.sort(function (a, b) {
@@ -905,6 +898,18 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                    (clipEndTicks   <= zoneEndTicks   + tolTicks);
         }
 
+        var rangeStartTicks = null;
+        var rangeEndTicks = null;
+        if (opts.range) {
+            if (opts.range.startTicks !== undefined && opts.range.endTicks !== undefined) {
+                rangeStartTicks = Number(opts.range.startTicks);
+                rangeEndTicks = Number(opts.range.endTicks);
+            } else if (opts.range.startSeconds !== undefined && opts.range.endSeconds !== undefined) {
+                rangeStartTicks = _secondsToTicks(opts.range.startSeconds);
+                rangeEndTicks = _secondsToTicks(opts.range.endSeconds);
+            }
+        }
+
         for (var z = 0; z < zones.length; z++) {
             if (_isApplyCutsCancelled()) return _cancelledResult();
 
@@ -914,11 +919,16 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
             var zStart = normalizedZone.startSeconds;
             var zEnd = normalizedZone.endSeconds;
             if (!(zEndTicks > zStartTicks)) { skipped++; continue; }
-            if (rangeStart !== null && rangeEnd !== null) {
-                if (zEnd <= rangeStart || zStart >= rangeEnd) { skipped++; continue; }
-                if (zStart < rangeStart) zStart = rangeStart;
-                if (zEnd > rangeEnd) zEnd = rangeEnd;
-                if (!(zEnd > zStart)) { skipped++; continue; }
+            if (rangeStartTicks !== null && rangeEndTicks !== null) {
+                if (zEndTicks <= rangeStartTicks || zStartTicks >= rangeEndTicks) {
+                    skipped++;
+                    continue;
+                }
+                if (zStartTicks < rangeStartTicks) zStartTicks = rangeStartTicks;
+                if (zEndTicks > rangeEndTicks) zEndTicks = rangeEndTicks;
+                zStart = _ticksToSeconds(zStartTicks);
+                zEnd = _ticksToSeconds(zEndTicks);
+                if (!(zEndTicks > zStartTicks)) { skipped++; continue; }
             }
 
             var startTC = _ticksToTimecode(zStartTicks);

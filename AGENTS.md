@@ -4,6 +4,13 @@
 
 Antes de qualquer alteração no código deste projeto, você DEVE ler os arquivos abaixo na ordem:
 
+Caso linux:
+1. `/home/pedro/GoogleDrive/Notas/cerebrum/AGENTS.md` — regras gerais do meu vault
+2. `/home/pedro/GoogleDrive/Notas/cerebrum/Memoria/sobre-mim.md` — quem eu sou e minhas preferências
+3. `/home/pedro/GoogleDrive/Notas/cerebrum/Memoria/contexto-geral.md` — estado atual dos projetos
+4. `/home/pedro/GoogleDrive/Notas/cerebrum/Projetos/duckycut/` — pasta completa deste projeto no vault
+
+Caso caso windows:
 1. `G:/Meu Drive/Notas/cerebrum/AGENTS.md` — regras gerais do meu vault
 2. `G:/Meu Drive/Notas/cerebrum/Memoria/sobre-mim.md` — quem eu sou e minhas preferências
 3. `G:/Meu Drive/Notas/cerebrum/Memoria/contexto-geral.md` — estado atual dos projetos

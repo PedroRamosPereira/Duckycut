@@ -115,10 +115,17 @@
     let paddingLinked   = false;  // whether Padding In/Out are synced
     let isApplyingCuts  = false;
     let applyCancelRequested = false;
+    let analysisRangeMode = "full";
+    let analysisRangeInfo = null;
 
     function getSelectedTrackIndices() {
         return Array.from(document.querySelectorAll(".track-cb:checked"))
                     .map(function(cb) { return parseInt(cb.value, 10); });
+    }
+
+    function getSelectedRangeMode() {
+        var selected = document.querySelector('input[name="rangeMode"]:checked');
+        return selected ? selected.value : "full";
     }
 
     // ── Init ─────────────────────────────────────────────────────
@@ -447,7 +454,7 @@
         return evalScript("restoreAudioTrackMutes(" + JSON.stringify(JSON.stringify(savedStates)) + ")");
     }
 
-    function ensureSelectedTrackMixdown(selectedIdx, progressBase, progressSpan) {
+    function ensureSelectedTrackMixdown(selectedIdx, progressBase, progressSpan, rangeInfo) {
         if (!nodeFs || !nodePath || !nodeOs) {
             return Promise.reject(new Error("Node.js File I/O unavailable"));
         }
@@ -460,8 +467,10 @@
         var extensionRoot = csInterface.getSystemPath(SystemPath.EXTENSION)
                                 .replace(/\\/g, "/");
         var savedMuteStates = null;
-        var expectedDuration = (seqSettings && seqSettings.durationSeconds)
-            || (sequenceInfo && sequenceInfo.durationSeconds) || 0;
+        var expectedDuration = rangeInfo && rangeInfo.mode === "inout"
+            ? rangeInfo.durationSeconds
+            : ((seqSettings && seqSettings.durationSeconds)
+                || (sequenceInfo && sequenceInfo.durationSeconds) || 0);
         var pollInterval   = 500;
         var stableSampleMs = 300;
         var stableNeeded   = 10;
@@ -566,7 +575,10 @@
                 savedMuteStates = mr.savedStates;
 
                 updateMixProgress(0.15, "Rendering sequence audio directly in Premiere...");
-                return evalScript("exportSequenceAudio(" + jsxStringArg(tempWav) + "," + jsxStringArg(extensionRoot) + ")");
+                var workAreaType = rangeInfo && typeof rangeInfo.workAreaType === "number"
+                    ? rangeInfo.workAreaType
+                    : (rangeInfo && rangeInfo.mode === "inout" ? 1 : 0);
+                return evalScript("exportSequenceAudio(" + jsxStringArg(tempWav) + "," + jsxStringArg(extensionRoot) + "," + workAreaType + ")");
             })
             .then(function(r) {
                 var res = {};
@@ -589,15 +601,23 @@
             setStatus("Select at least one audio track", "error"); return;
         }
 
+        analysisRangeMode = getSelectedRangeMode();
+        analysisRangeInfo = null;
+
         elBtnAnalyze.disabled = true;
         elResultsSection.style.display = "none";
         showProgress("Reading sequence tracks...");
+
+        var rangePromise = analysisRangeMode === "inout"
+            ? evalScript("getSequenceInOutRange()")
+            : Promise.resolve('{"success":true,"valid":true}');
 
         Promise.all([
             evalScript("getProjectPath()"),
             evalScript("getFullSequenceClips()"),
             evalScript("getSequenceSettings()"),
-        ]).then(function([projectRaw, clipsRaw, settingsRaw]) {
+            rangePromise,
+        ]).then(function([projectRaw, clipsRaw, settingsRaw, rangeRaw]) {
             var projectError = getProjectPathError(projectRaw);
             if (projectError) {
                 setStatus(projectError, "error");
@@ -615,12 +635,25 @@
                 if (seqSettings.error) seqSettings = null;
             } catch (e) { seqSettings = null; }
 
+            var rangeInfo = null;
+            try { rangeInfo = JSON.parse(rangeRaw || "{}"); } catch (e) { rangeInfo = null; }
+            if (analysisRangeMode === "inout") {
+                if (!rangeInfo || !rangeInfo.success || !rangeInfo.valid || !(rangeInfo.endSeconds > rangeInfo.startSeconds)) {
+                    setStatus("Define In and Out in the Premiere timeline before using Range: In-Out", "error");
+                    hideProgress(); elBtnAnalyze.disabled = false;
+                    return;
+                }
+                rangeInfo.mode = "inout";
+                rangeInfo.workAreaType = 1;
+                analysisRangeInfo = rangeInfo;
+            }
+
             updateProgress(10, "Preparing audio for analysis...");
 
             var threshold   = computeThreshold(elAggressiveness.value);
             var minDuration = parseInt(elMinDuration.value, 10) / 1000;
 
-            ensureSelectedTrackMixdown(selectedIdx, 10, 25)
+            ensureSelectedTrackMixdown(selectedIdx, 10, 25, analysisRangeInfo)
                 .then(function(tempWav) {
                     runDetection(tempWav);
                 })
@@ -637,9 +670,21 @@
                         analysisResult = result;
                         updateProgress(80, "Applying Clean Cut algorithm...");
 
+                        var silenceIntervals = result.silenceIntervals;
+                        var mediaDuration = result.mediaDuration;
+                        if (analysisRangeInfo && analysisRangeInfo.mode === "inout") {
+                            silenceIntervals = window.Duckycut.cutZones.offsetIntervals(
+                                result.silenceIntervals,
+                                analysisRangeInfo.startSeconds
+                            );
+                            mediaDuration = seqSettings && seqSettings.durationSeconds
+                                ? seqSettings.durationSeconds
+                                : analysisRangeInfo.endSeconds;
+                        }
+
                         keepZones = computeCleanCutZones(
-                            result.silenceIntervals,
-                            result.mediaDuration,
+                            silenceIntervals,
+                            mediaDuration,
                             {
                                 paddingIn:       parseInt(elPaddingIn.value, 10)       / 1000,
                                 paddingOut:      parseInt(elPaddingOut.value, 10)      / 1000,
@@ -844,12 +889,17 @@
         }
         if (cursor < totalDuration) rawCuts.push([cursor, totalDuration]);
 
+        var rangedCuts = rawCuts;
+        if (analysisRangeInfo && analysisRangeInfo.mode === "inout") {
+            rangedCuts = window.Duckycut.cutZones.intersectIntervalsWithRange(rawCuts, analysisRangeInfo);
+        }
+
         // Snap each boundary to a frame so the host's TC conversion can't shift
         // it by ±½ frame (asymmetric round of zone start vs end). Drop zones
         // that collapse to zero width after snapping.
         const cutZones = (window.Duckycut && window.Duckycut.cutZones && window.Duckycut.cutZones.prepareCutZonesForApply)
-            ? window.Duckycut.cutZones.prepareCutZonesForApply(rawCuts, fps, isNTSC)
-            : mergeOverlappingIntervals(rawCuts.map(function (z) {
+            ? window.Duckycut.cutZones.prepareCutZonesForApply(rangedCuts, fps, isNTSC)
+            : mergeOverlappingIntervals(rangedCuts.map(function (z) {
                 return [snapSecondsToFrame(z[0], fps, isNTSC), snapSecondsToFrame(z[1], fps, isNTSC)];
             }).filter(function (z) { return z[1] > z[0]; }));
 
@@ -861,7 +911,13 @@
         updateProgress(40, "Razoring " + cutZones.length + " zones...");
 
         const optsArg  = JSON.stringify(JSON.stringify({
-            fps: fps, isNTSC: isNTSC, isDropFrame: isDropFrame
+            fps: fps,
+            isNTSC: isNTSC,
+            isDropFrame: isDropFrame,
+            range: analysisRangeInfo && analysisRangeInfo.mode === "inout" ? {
+                startSeconds: analysisRangeInfo.startSeconds,
+                endSeconds: analysisRangeInfo.endSeconds
+            } : null
         }));
 
         const zonesToApply = cutZones.slice().sort(function (a, b) { return b[0] - a[0]; });

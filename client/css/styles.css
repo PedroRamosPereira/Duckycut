@@ -129,6 +129,37 @@ input[type="range"]::-webkit-slider-thumb:hover { background: #ffb84d; transform
 .toggle-switch input:checked + .toggle-slider { background: #f0a030; }
 .toggle-switch input:checked + .toggle-slider::before { transform: translateX(20px); background: #fff; }
 
+.range-toggle {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    background: #2a2a2a;
+    border-radius: 6px;
+    padding: 4px;
+}
+.range-option { cursor: pointer; }
+.range-option input { display: none; }
+.range-option span {
+    display: block;
+    text-align: center;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #888;
+    border: 1px solid transparent;
+}
+.range-option input:checked + span {
+    color: #1a1a1a;
+    background: #f0a030;
+    border-color: #ffb84d;
+}
+.range-hint {
+    font-size: 10px;
+    color: #888;
+    font-style: italic;
+}
+
 /* ── Dropdown ── */
 .dropdown { background: #2a2a2a; color: #e0e0e0; border: 1px solid #555; border-radius: 4px; padding: 8px 10px; font-size: 12px; cursor: pointer; outline: none; }
 .dropdown:hover { border-color: #f0a030; }

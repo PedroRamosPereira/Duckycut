@@ -169,9 +169,35 @@
         return pad(hh) + ":" + pad(mm) + ":" + pad(ss) + ":" + pad(ff);
     }
 
+    function offsetIntervals(intervals, offsetSeconds) {
+        var offset = Number(offsetSeconds) || 0;
+        var out = [];
+        if (!intervals) return out;
+        for (var i = 0; i < intervals.length; i++) {
+            out.push([Number(intervals[i][0]) + offset, Number(intervals[i][1]) + offset]);
+        }
+        return out;
+    }
+
+    function intersectIntervalsWithRange(intervals, range) {
+        var out = [];
+        if (!intervals || !range) return out;
+        var start = Number(range.startSeconds);
+        var end = Number(range.endSeconds);
+        if (!(end > start)) return out;
+        for (var i = 0; i < intervals.length; i++) {
+            var s = Math.max(Number(intervals[i][0]), start);
+            var e = Math.min(Number(intervals[i][1]), end);
+            if (e > s) out.push([s, e]);
+        }
+        return out;
+    }
+
     return {
         computeSilenceCutZones: computeSilenceCutZones,
         prepareCutZonesForApply: prepareCutZonesForApply,
+        offsetIntervals:          offsetIntervals,
+        intersectIntervalsWithRange: intersectIntervalsWithRange,
         secondsToTimecode:      secondsToTimecode,
         secondsToDropTimecode:  secondsToDropTimecode,
         parseZeroPoint:         parseZeroPoint,

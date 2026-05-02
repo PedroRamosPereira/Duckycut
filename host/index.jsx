@@ -428,13 +428,14 @@ function getAllMediaPaths() {
  * file directly through Premiere. The panel mutes unselected tracks before
  * calling this, so the exported mixdown reflects only the tracks under analysis.
  *
- * Range is ENCODE_ENTIRE (not ENCODE_IN_TO_OUT) so existing sequence In/Out
- * marks don't silently truncate the export and shift every detected timestamp.
+ * Range defaults to ENCODE_ENTIRE so existing sequence In/Out marks don't
+ * silently truncate the export. The panel may pass workAreaType=1 explicitly
+ * when the user selects Range: In-Out.
  *
  * @param {string} outputPath    - Destination WAV path (forward slashes OK)
  * @param {string} extensionPath - Root directory of the CEP extension
  */
-function exportSequenceAudio(outputPath, extensionPath) {
+function exportSequenceAudio(outputPath, extensionPath, workAreaType) {
     try {
         var seq = app.project.activeSequence;
         if (!seq) return '{"success":false,"error":"No active sequence"}';
@@ -563,14 +564,17 @@ function exportSequenceAudio(outputPath, extensionPath) {
             return '{"success":false,"error":"' + msg + '"}';
         }
 
+        var exportWorkAreaType = parseInt(workAreaType, 10);
+        if (isNaN(exportWorkAreaType)) exportWorkAreaType = 0;
+
         // ── Export directly through Premiere ────────────────────────
-        // exportAsMediaDirect(outputPath, presetPath, encodeType)
-        // encodeType 0 = ENCODE_ENTIRE, ignoring sequence In/Out markers.
+        // exportAsMediaDirect(outputPath, presetPath, workAreaType)
+        // workAreaType 0 = full sequence, 1 = sequence In to Out.
         try {
             seq.exportAsMediaDirect(
                 outNorm,
                 presetPath,
-                0    // ENCODE_ENTIRE — ignore any In/Out marks on the sequence
+                exportWorkAreaType
             );
         } catch (exportErr) {
             return '{"success":false,"error":"exportAsMediaDirect failed: ' + exportErr.toString().replace(/"/g, '\\"') + '"}';
@@ -579,7 +583,8 @@ function exportSequenceAudio(outputPath, extensionPath) {
         return JSON.stringify({
             success: true,
             path:    cleanOutPath,
-            preset:  presetPath.replace(/\\/g, "/")
+            preset:  presetPath.replace(/\\/g, "/"),
+            workAreaType: exportWorkAreaType
         });
     } catch (e) {
         return '{"success":false,"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
@@ -706,6 +711,42 @@ function getSequenceSettings() {
     }
 }
 
+function getSequenceInOutRange() {
+    try {
+        var seq = app.project.activeSequence;
+        if (!seq) return '{"success":false,"error":"No active sequence"}';
+
+        var inTime = null;
+        var outTime = null;
+        try { inTime = seq.getInPointAsTime(); } catch (e1) {}
+        try { outTime = seq.getOutPointAsTime(); } catch (e2) {}
+
+        var startTicks = NaN;
+        var endTicks = NaN;
+        try { startTicks = Number(inTime.ticks); } catch (e3) {}
+        try { endTicks = Number(outTime.ticks); } catch (e4) {}
+
+        if (isNaN(startTicks)) startTicks = Math.round(_timeToSecondsPreferTicks(inTime) * TICKS);
+        if (isNaN(endTicks)) endTicks = Math.round(_timeToSecondsPreferTicks(outTime) * TICKS);
+
+        var startSeconds = startTicks / TICKS;
+        var endSeconds = endTicks / TICKS;
+        var valid = endTicks > startTicks;
+
+        return JSON.stringify({
+            success: true,
+            valid: valid,
+            startTicks: String(startTicks),
+            endTicks: String(endTicks),
+            startSeconds: startSeconds,
+            endSeconds: endSeconds,
+            durationSeconds: endSeconds - startSeconds
+        });
+    } catch (e) {
+        return '{"success":false,"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
+    }
+}
+
 /**
  * Razor + ripple-delete of every cut zone across ALL video and audio tracks
  * in the active sequence. Equivalent to selecting each zone with the playhead
@@ -728,6 +769,12 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         var fps         = (typeof opts.fps         === "number")  ? opts.fps         : 29.97;
         var isNTSC      = (typeof opts.isNTSC      === "boolean") ? opts.isNTSC      : false;
         var isDropFrame = (typeof opts.isDropFrame === "boolean") ? opts.isDropFrame : false;
+        var rangeStart = null;
+        var rangeEnd = null;
+        if (opts.range && typeof opts.range.startSeconds === "number" && typeof opts.range.endSeconds === "number" && opts.range.endSeconds > opts.range.startSeconds) {
+            rangeStart = opts.range.startSeconds;
+            rangeEnd = opts.range.endSeconds;
+        }
 
         if (!zones.length) return '{"success":true,"applied":0,"skipped":0}';
 
@@ -802,6 +849,12 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
             var zStart = Number(zones[z][0]);
             var zEnd   = Number(zones[z][1]);
             if (!(zEnd > zStart)) { skipped++; continue; }
+            if (rangeStart !== null && rangeEnd !== null) {
+                if (zEnd <= rangeStart || zStart >= rangeEnd) { skipped++; continue; }
+                if (zStart < rangeStart) zStart = rangeStart;
+                if (zEnd > rangeEnd) zEnd = rangeEnd;
+                if (!(zEnd > zStart)) { skipped++; continue; }
+            }
 
             var startTC = _zoneToTC(zStart);
             var endTC   = _zoneToTC(zEnd);

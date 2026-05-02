@@ -3,6 +3,8 @@ const assert = require("node:assert/strict");
 const {
     computeSilenceCutZones,
     prepareCutZonesForApply,
+    offsetIntervals,
+    intersectIntervalsWithRange,
     secondsToTimecode,
     jsxStringArg,
     getProjectPathError,
@@ -96,4 +98,17 @@ test("prepareCutZonesForApply: drops zones collapsed by frame snap", () => {
     const out = prepareCutZonesForApply([[1.001, 1.002], [2, 2.08]], 25, false);
 
     assert.deepEqual(out, [[2, 2.08]]);
+});
+
+test("offsetIntervals shifts detected silence into sequence time", () => {
+    const zones = offsetIntervals([[0.5, 1.25], [2, 3]], 10);
+    assert.deepEqual(zones, [[10.5, 11.25], [12, 13]]);
+});
+
+test("intersectIntervalsWithRange clamps zones to In-Out", () => {
+    const zones = intersectIntervalsWithRange(
+        [[0, 5], [8, 12], [15, 20], [22, 25]],
+        { startSeconds: 10, endSeconds: 22 }
+    );
+    assert.deepEqual(zones, [[10, 12], [15, 20]]);
 });

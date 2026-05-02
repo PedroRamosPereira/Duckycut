@@ -183,3 +183,81 @@ test("host applyCutsInPlace stops when cancellation is requested", () => {
     assert.match(fn, /_isApplyCutsCancelled\(\)/, "apply loop should poll cancellation state");
     assert.match(fn, /\"cancelled\":true/, "cancelled runs should return a cancelled result");
 });
+
+test("host exposes sequence In-Out range in ticks and seconds", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function getSequenceInOutRange");
+    assert.notEqual(start, -1, "getSequenceInOutRange should exist");
+
+    const end = host.indexOf("\n/**", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /getInPointAsTime\(/, "range should read sequence In point");
+    assert.match(fn, /getOutPointAsTime\(/, "range should read sequence Out point");
+    assert.match(fn, /\.ticks/, "range should prefer ticks for precision");
+    assert.match(fn, /254016000000|TICKS/, "range should convert ticks using Premiere tick rate");
+    assert.match(fn, /durationSeconds/, "range should return durationSeconds");
+});
+
+test("host exportSequenceAudio accepts workAreaType for In-Out exports", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function exportSequenceAudio");
+    assert.notEqual(start, -1, "exportSequenceAudio should exist");
+
+    const end = host.indexOf("\n/**", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /workAreaType/, "exportSequenceAudio should accept workAreaType");
+    assert.match(fn, /exportAsMediaDirect\([\s\S]*workAreaType/, "exportAsMediaDirect should receive workAreaType");
+});
+
+test("panel exposes Full Sequence / In-Out range toggle", () => {
+    const html = readProjectFile("client/index.html");
+    const main = readProjectFile("client/js/main.js");
+
+    assert.match(html, /name="rangeMode"/, "range mode radio group should exist");
+    assert.match(html, /value="full"/, "Full Sequence option should exist");
+    assert.match(html, /value="inout"/, "In-Out option should exist");
+    assert.match(main, /getSelectedRangeMode\(/, "panel should read selected range mode");
+});
+
+test("panel Analyze validates In-Out range, exports In-Out, and offsets detected silence", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function runAnalysis");
+    assert.notEqual(start, -1, "runAnalysis should exist");
+
+    const end = main.indexOf("\n    // ═", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /getSelectedRangeMode\(/, "Analyze should read selected range mode");
+    assert.match(fn, /getSequenceInOutRange\(/, "Analyze should request In-Out range from host");
+    assert.match(fn, /Define In and Out|set In and Out/i, "invalid In-Out should fail clearly");
+    assert.match(fn, /workAreaType/, "Analyze should derive export workAreaType");
+    assert.match(fn, /offsetIntervals\(/, "Analyze should offset FFmpeg intervals into sequence time");
+});
+
+test("panel clamps Apply cut zones to analyzed In-Out range", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function applyCutsInPlaceFromPanel");
+    assert.notEqual(start, -1, "applyCutsInPlaceFromPanel should exist");
+
+    const end = main.indexOf("\n    // ── UI Helpers", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /intersectIntervalsWithRange\(/, "Apply should clamp cut zones to In-Out range");
+    assert.match(fn, /analysisRangeInfo/, "Apply should use range captured during Analyze");
+    assert.match(fn, /range:/, "Apply should pass range to host opts");
+});
+
+test("host applyCutsInPlace ignores zones outside opts.range", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function applyCutsInPlace");
+    assert.notEqual(start, -1, "applyCutsInPlace should exist");
+
+    const end = host.indexOf("\nfunction applyCutsInPlaceFile", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /opts\.range/, "host should read opts.range");
+    assert.match(fn, /rangeStart/, "host should derive rangeStart");
+    assert.match(fn, /rangeEnd/, "host should derive rangeEnd");
+});

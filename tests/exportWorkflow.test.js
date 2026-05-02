@@ -278,3 +278,18 @@ test("host applyCutsInPlace ignores zones outside opts.range", () => {
     assert.match(fn, /rangeStart/, "host should derive rangeStart");
     assert.match(fn, /rangeEnd/, "host should derive rangeEnd");
 });
+
+test("host applyCutsInPlace normalizes zones to ticks before razor and remove", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function applyCutsInPlace");
+    assert.notEqual(start, -1, "applyCutsInPlace should exist");
+
+    const end = host.indexOf("\nfunction applyCutsInPlaceFile", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /_normalizeCutZone\(/, "host should normalize array and object zones");
+    assert.match(fn, /startTicks/, "host should read startTicks from zone payload");
+    assert.match(fn, /endTicks/, "host should read endTicks from zone payload");
+    assert.match(fn, /_ticksToTimecode\(/, "host should convert ticks to timecode only for razor");
+    assert.match(fn, /_clipFullyInsideTicks\(/, "host should compare clip bounds against zone ticks");
+});

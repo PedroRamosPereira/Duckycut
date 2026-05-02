@@ -778,7 +778,11 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
 
         if (!zones.length) return '{"success":true,"applied":0,"skipped":0}';
 
-        zones.sort(function (a, b) { return b[0] - a[0]; });
+        zones.sort(function (a, b) {
+            var aStartTicks = (a && a.startTicks !== undefined) ? Number(a.startTicks) : Math.round(Number(a[0]) * TICKS);
+            var bStartTicks = (b && b.startTicks !== undefined) ? Number(b.startTicks) : Math.round(Number(b[0]) * TICKS);
+            return bStartTicks - aStartTicks;
+        });
 
         try { app.enableQE(); } catch (eQE) {
             return '{"success":false,"error":"QE DOM not available: ' + eQE.toString().replace(/"/g, '\\"') + '"}';
@@ -843,12 +847,73 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
             });
         }
 
+        function _secondsToTicks(secs) {
+            return Math.round(Number(secs) * TICKS);
+        }
+
+        function _timeToTicksPreferTicks(t) {
+            try {
+                if (t && t.ticks !== undefined) {
+                    var rawTicks = Number(t.ticks);
+                    if (!isNaN(rawTicks)) return Math.round(rawTicks);
+                }
+            } catch (e1) {}
+            try {
+                if (t && typeof t.seconds === "number") return _secondsToTicks(t.seconds);
+            } catch (e2) {}
+            return 0;
+        }
+
+        function _ticksToSeconds(ticks) {
+            return Number(ticks) / TICKS;
+        }
+
+        function _ticksToTimecode(ticks) {
+            return _zoneToTC(_ticksToSeconds(ticks));
+        }
+
+        function _normalizeCutZone(zone) {
+            var startTicks = 0;
+            var endTicks = 0;
+            var startSeconds = 0;
+            var endSeconds = 0;
+
+            if (zone && zone.startTicks !== undefined && zone.endTicks !== undefined) {
+                startTicks = Number(zone.startTicks);
+                endTicks = Number(zone.endTicks);
+                startSeconds = _ticksToSeconds(startTicks);
+                endSeconds = _ticksToSeconds(endTicks);
+            } else {
+                startSeconds = Number(zone[0]);
+                endSeconds = Number(zone[1]);
+                startTicks = _secondsToTicks(startSeconds);
+                endTicks = _secondsToTicks(endSeconds);
+            }
+
+            return {
+                startTicks: startTicks,
+                endTicks: endTicks,
+                startSeconds: startSeconds,
+                endSeconds: endSeconds
+            };
+        }
+
+        function _clipFullyInsideTicks(clipStartTicks, clipEndTicks, zoneStartTicks, zoneEndTicks, fps) {
+            var frameTicks = (fps && fps > 0) ? Math.round(TICKS / fps) : Math.round(TICKS / 30);
+            var tolTicks = Math.round(frameTicks * 1.5);
+            return (clipStartTicks >= zoneStartTicks - tolTicks) &&
+                   (clipEndTicks   <= zoneEndTicks   + tolTicks);
+        }
+
         for (var z = 0; z < zones.length; z++) {
             if (_isApplyCutsCancelled()) return _cancelledResult();
 
-            var zStart = Number(zones[z][0]);
-            var zEnd   = Number(zones[z][1]);
-            if (!(zEnd > zStart)) { skipped++; continue; }
+            var normalizedZone = _normalizeCutZone(zones[z]);
+            var zStartTicks = normalizedZone.startTicks;
+            var zEndTicks = normalizedZone.endTicks;
+            var zStart = normalizedZone.startSeconds;
+            var zEnd = normalizedZone.endSeconds;
+            if (!(zEndTicks > zStartTicks)) { skipped++; continue; }
             if (rangeStart !== null && rangeEnd !== null) {
                 if (zEnd <= rangeStart || zStart >= rangeEnd) { skipped++; continue; }
                 if (zStart < rangeStart) zStart = rangeStart;
@@ -856,12 +921,14 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                 if (!(zEnd > zStart)) { skipped++; continue; }
             }
 
-            var startTC = _zoneToTC(zStart);
-            var endTC   = _zoneToTC(zEnd);
+            var startTC = _ticksToTimecode(zStartTicks);
+            var endTC   = _ticksToTimecode(zEndTicks);
             var zoneDiag = {
                 zoneIndex: z,
                 zStart: zStart,
                 zEnd: zEnd,
+                zStartTicks: String(zStartTicks),
+                zEndTicks: String(zEndTicks),
                 startTC: startTC,
                 endTC: endTC,
                 clipsBefore: _countTimelineClips(seq),
@@ -955,11 +1022,11 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         diag.push("fps=" + fps + " isNTSC=" + isNTSC + " isDropFrame=" + isDropFrame);
         if (zones.length > 0) {
             // zones is sorted descending by start; first entry = latest, last entry = earliest.
-            var firstZone = zones[zones.length - 1];
-            var lastZone  = zones[0];
-            diag.push("firstZoneSec=[" + firstZone[0] + "," + firstZone[1] + "]");
-            diag.push("firstZoneTC=[" + _zoneToTC(firstZone[0]) + "," + _zoneToTC(firstZone[1]) + "]");
-            diag.push("lastZoneTC=["  + _zoneToTC(lastZone[0])  + "," + _zoneToTC(lastZone[1])  + "]");
+            var firstZone = _normalizeCutZone(zones[zones.length - 1]);
+            var lastZone  = _normalizeCutZone(zones[0]);
+            diag.push("firstZoneSec=[" + firstZone.startSeconds + "," + firstZone.endSeconds + "]");
+            diag.push("firstZoneTC=[" + _ticksToTimecode(firstZone.startTicks) + "," + _ticksToTimecode(firstZone.endTicks) + "]");
+            diag.push("lastZoneTC=["  + _ticksToTimecode(lastZone.startTicks)  + "," + _ticksToTimecode(lastZone.endTicks)  + "]");
         }
 
         var result = '{"success":true,"applied":' + applied + ',"skipped":' + skipped;

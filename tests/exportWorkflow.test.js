@@ -256,6 +256,18 @@ test("panel Analyze validates In-Out range, clips selected tracks, and offsets d
     assert.match(fn, /offsetIntervals\(/, "Analyze should offset FFmpeg intervals into sequence time");
 });
 
+test("panel Analyze uses sequence duration after selected-track FFmpeg detection", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function runAnalysis");
+    assert.notEqual(start, -1, "runAnalysis should exist");
+
+    const end = main.indexOf("\n    // ═", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /seqSettings\s*&&\s*seqSettings\.durationSeconds/, "Analyze should prefer full sequence duration");
+    assert.match(fn, /result\.mediaDuration\s*=\s*mediaDuration/, "result duration should be normalized before showResults and Apply Cuts");
+});
+
 test("panel clamps Apply cut zones to analyzed In-Out range", () => {
     const main = readProjectFile("client/js/main.js");
     const start = main.indexOf("function applyCutsInPlaceFromPanel");

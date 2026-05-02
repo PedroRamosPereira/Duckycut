@@ -571,20 +571,21 @@
                 });
 
             function processDetectionResult(result) {
-                analysisResult = result;
                 updateProgress(80, "Applying Clean Cut algorithm...");
 
                 var silenceIntervals = result.silenceIntervals;
-                var mediaDuration = result.mediaDuration;
+                var mediaDuration = seqSettings && seqSettings.durationSeconds
+                    ? seqSettings.durationSeconds
+                    : result.mediaDuration;
                 if (analysisRangeInfo && analysisRangeInfo.mode === "inout") {
                     silenceIntervals = window.Duckycut.cutZones.offsetIntervals(
                         result.silenceIntervals,
                         analysisRangeInfo.startSeconds
                     );
-                    mediaDuration = seqSettings && seqSettings.durationSeconds
-                        ? seqSettings.durationSeconds
-                        : analysisRangeInfo.endSeconds;
+                    mediaDuration = mediaDuration || analysisRangeInfo.endSeconds;
                 }
+                result.mediaDuration = mediaDuration;
+                analysisResult = result;
 
                 keepZones = computeCleanCutZones(
                     silenceIntervals,

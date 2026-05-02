@@ -7,22 +7,21 @@
  *      channel; generator no longer duplicates A1 across all tracks.
  *   3. Framerate: getSequenceSettings() reads timebase directly from the
  *      sequence — no hardcoded 29.97 fallback unless the API truly fails.
- *   4. Audio pre-render: when Analyze is clicked, the panel asks Premiere
- *      to export a WAV mixdown of the checked audio tracks. FFmpeg analyses
- *      that rendered file, matching the Premiere sequence mix.
+ *   4. Audio selection: Analyze builds an FFmpeg mix only from checked
+ *      audio tracks, instead of trusting Premiere mute state during export.
  */
 
 (function () {
     "use strict";
 
     const csInterface = new CSInterface();
+    const APPLY_CUTS_CHUNK_SIZE = 50;
 
     let silenceDetector = null;
     let nodeRequire     = null;
     let modulesError    = "";
     let nodeFs          = null;
     let nodePath        = null;
-    let nodeOs          = null;
 
     // ── Load Node.js modules ─────────────────────────────────────
     try {
@@ -36,7 +35,6 @@
         try {
             nodePath = nodeRequire("path");
             nodeFs   = nodeRequire("fs");
-            nodeOs   = nodeRequire("os");
             var serverDir = null;
 
             if (typeof __dirname !== "undefined" && __dirname) {
@@ -449,147 +447,49 @@
     }
 
     // ── Run Analysis ─────────────────────────────────────────────
-    function restoreMutes(savedStates) {
-        if (!savedStates) return Promise.resolve();
-        return evalScript("restoreAudioTrackMutes(" + JSON.stringify(JSON.stringify(savedStates)) + ")");
-    }
+    function buildSelectedAudioTracksForDetection(selectedIdx, clips, rangeInfo) {
+        var tracksByIndex = {};
+        var rangeStart = rangeInfo && rangeInfo.mode === "inout" ? Number(rangeInfo.startSeconds) : 0;
+        var rangeEnd = rangeInfo && rangeInfo.mode === "inout" ? Number(rangeInfo.endSeconds) : null;
 
-    function ensureSelectedTrackMixdown(selectedIdx, progressBase, progressSpan, rangeInfo) {
-        if (!nodeFs || !nodePath || !nodeOs) {
-            return Promise.reject(new Error("Node.js File I/O unavailable"));
-        }
-        if (!selectedIdx || selectedIdx.length === 0) {
-            return Promise.reject(new Error("Select at least one audio track"));
-        }
+        if (!clips || !selectedIdx || selectedIdx.length === 0) return [];
 
-        var tempWav = nodePath.join(nodeOs.tmpdir(), "duckycut_temp_mixdown_" + Date.now() + ".wav")
-                        .replace(/\\/g, "/");
-        var extensionRoot = csInterface.getSystemPath(SystemPath.EXTENSION)
-                                .replace(/\\/g, "/");
-        var savedMuteStates = null;
-        var expectedDuration = rangeInfo && rangeInfo.mode === "inout"
-            ? rangeInfo.durationSeconds
-            : ((seqSettings && seqSettings.durationSeconds)
-                || (sequenceInfo && sequenceInfo.durationSeconds) || 0);
-        var pollInterval   = 500;
-        var stableSampleMs = 300;
-        var stableNeeded   = 10;
-        var pollTimeout    = Math.max(180000, Math.round(expectedDuration * 1000 * 0.75));
-        var elapsed        = 0;
-        var base           = progressBase || 10;
-        var span           = progressSpan || 20;
+        for (var i = 0; i < clips.length; i++) {
+            var clip = clips[i];
+            if (!clip || clip.trackType !== "audio") continue;
+            if (selectedIdx.indexOf(clip.trackIndex) === -1) continue;
+            if (!clip.mediaPath) continue;
 
-        console.log("[Duckycut] Rendering selected tracks as one mixdown:", JSON.stringify(selectedIdx));
+            var clipStart = Number(clip.start);
+            var clipEnd = Number(clip.end);
+            if (!(clipEnd > clipStart)) continue;
 
-        function cleanupOnError(err) {
-            return restoreMutes(savedMuteStates).then(function() {
-                try { if (nodeFs.existsSync(tempWav)) nodeFs.unlinkSync(tempWav); } catch (e) {}
-                throw err;
-            });
-        }
-
-        function updateMixProgress(pct, msg) {
-            updateProgress(Math.min(95, base + Math.round(span * pct)), msg);
-        }
-
-        function validateRenderedDuration() {
-            if (!silenceDetector || !silenceDetector.probeAudio || !expectedDuration) {
-                return Promise.resolve(tempWav);
+            var overlapStart = clipStart;
+            var overlapEnd = clipEnd;
+            if (rangeEnd !== null) {
+                overlapStart = Math.max(overlapStart, rangeStart);
+                overlapEnd = Math.min(overlapEnd, rangeEnd);
+                if (!(overlapEnd > overlapStart)) continue;
             }
-            return silenceDetector.probeAudio(tempWav).then(function(probe) {
-                var renderedDuration = probe && probe.durationSeconds ? probe.durationSeconds : 0;
-                var tolerance = Math.max(1, expectedDuration * 0.01);
-                console.log("[Duckycut] mixdown duration=", renderedDuration,
-                    "expected=", expectedDuration, "tolerance=", tolerance);
-                if (renderedDuration && renderedDuration < expectedDuration - tolerance) {
-                    throw new Error("Mixdown duration is shorter than sequence duration; possible duration mismatch/truncated Premiere render");
-                }
-                return tempWav;
+
+            if (!tracksByIndex[clip.trackIndex]) {
+                tracksByIndex[clip.trackIndex] = { index: clip.trackIndex, clips: [] };
+            }
+
+            tracksByIndex[clip.trackIndex].clips.push({
+                mediaPath: clip.mediaPath,
+                seqStart: overlapStart - rangeStart,
+                seqEnd: overlapEnd - rangeStart,
+                srcIn: clip.mediaIn + (overlapStart - clipStart),
+                srcOut: clip.mediaIn + (overlapEnd - clipStart),
             });
         }
 
-        function waitForStableSize() {
-            return new Promise(function(resolve, reject) {
-                var lastSize = -1;
-                var stableCount = 0;
-
-                function sample() {
-                    var size = -1;
-                    try { size = nodeFs.statSync(tempWav).size; } catch (e) {}
-
-                    if (size > 0 && size === lastSize) {
-                        stableCount++;
-                        if (stableCount >= stableNeeded) {
-                            console.log("[Duckycut] mixdown stable size=", size, "bytes");
-                            validateRenderedDuration().then(resolve, reject);
-                            return;
-                        }
-                    } else {
-                        stableCount = 0;
-                    }
-                    lastSize = size;
-
-                    elapsed += stableSampleMs;
-                    if (elapsed >= pollTimeout) {
-                        reject(new Error("Timeout waiting for Premiere render to finish"));
-                        return;
-                    }
-
-                    var sizeMB = size > 0 ? (Math.round(size / 1024 / 1024 * 10) / 10) : 0;
-                    updateMixProgress(
-                        0.65 + Math.min(0.25, stableCount / stableNeeded * 0.25),
-                        "Rendering directly in Premiere... " +
-                            (sizeMB > 0 ? sizeMB + " MB" : "")
-                    );
-                    setTimeout(sample, stableSampleMs);
-                }
-                sample();
-            });
+        var out = [];
+        for (var t = 0; t < selectedIdx.length; t++) {
+            if (tracksByIndex[selectedIdx[t]]) out.push(tracksByIndex[selectedIdx[t]]);
         }
-
-        function waitForFile() {
-            return new Promise(function(resolve, reject) {
-                function tick() {
-                    if (nodeFs.existsSync(tempWav)) {
-                        waitForStableSize().then(resolve, reject);
-                        return;
-                    }
-                    elapsed += pollInterval;
-                    if (elapsed >= pollTimeout) {
-                        reject(new Error("Timeout: Premiere didn't produce the WAV"));
-                        return;
-                    }
-                    updateMixProgress(0.25, "Waiting for Premiere render output...");
-                    setTimeout(tick, pollInterval);
-                }
-                tick();
-            });
-        }
-
-        updateMixProgress(0.05, "Muting unselected audio tracks...");
-        return evalScript("muteAudioTracks(" + JSON.stringify(JSON.stringify(selectedIdx)) + ")")
-            .then(function(muteRaw) {
-                var mr = {};
-                try { mr = JSON.parse(muteRaw); } catch(e) {}
-                if (!mr.success) throw new Error("Failed to mute tracks: " + (mr.error || "unknown"));
-                savedMuteStates = mr.savedStates;
-
-                updateMixProgress(0.15, "Rendering sequence audio directly in Premiere...");
-                var workAreaType = rangeInfo && typeof rangeInfo.workAreaType === "number"
-                    ? rangeInfo.workAreaType
-                    : (rangeInfo && rangeInfo.mode === "inout" ? 1 : 0);
-                return evalScript("exportSequenceAudio(" + jsxStringArg(tempWav) + "," + jsxStringArg(extensionRoot) + "," + workAreaType + ")");
-            })
-            .then(function(r) {
-                var res = {};
-                try { res = JSON.parse(r); } catch (e) {}
-                if (!res.success) throw new Error("Mixdown failed: " + (res.error || "unknown"));
-                return waitForFile();
-            })
-            .then(function(path) {
-                return restoreMutes(savedMuteStates).then(function() { return path; });
-            })
-            .catch(cleanupOnError);
+        return out;
     }
 
     function runAnalysis() {
@@ -653,58 +553,54 @@
             var threshold   = computeThreshold(elAggressiveness.value);
             var minDuration = parseInt(elMinDuration.value, 10) / 1000;
 
-            ensureSelectedTrackMixdown(selectedIdx, 10, 25, analysisRangeInfo)
-                .then(function(tempWav) {
-                    runDetection(tempWav);
+            var selectedAudioTracks = buildSelectedAudioTracksForDetection(selectedIdx, sequenceClips, analysisRangeInfo);
+            if (selectedAudioTracks.length === 0) {
+                setStatus("No audio clips found in selected tracks", "error");
+                hideProgress(); elBtnAnalyze.disabled = false;
+                return;
+            }
+
+            updateProgress(25, "Running FFmpeg silence detection on selected tracks...");
+            silenceDetector.detectSilenceFromSequence(selectedAudioTracks, threshold, minDuration)
+                .then(function(result) {
+                    processDetectionResult(result);
                 })
                 .catch(function(err) {
                     setStatus("Analysis error: " + (err.message || "unknown"), "error");
                     hideProgress(); elBtnAnalyze.disabled = false;
                 });
 
-            function runDetection(audioPath) {
-                updateProgress(25, "Running FFmpeg silence detection (rendered mixdown)...");
+            function processDetectionResult(result) {
+                analysisResult = result;
+                updateProgress(80, "Applying Clean Cut algorithm...");
 
-                silenceDetector.detectSilence(audioPath, threshold, minDuration)
-                    .then(function (result) {
-                        analysisResult = result;
-                        updateProgress(80, "Applying Clean Cut algorithm...");
+                var silenceIntervals = result.silenceIntervals;
+                var mediaDuration = result.mediaDuration;
+                if (analysisRangeInfo && analysisRangeInfo.mode === "inout") {
+                    silenceIntervals = window.Duckycut.cutZones.offsetIntervals(
+                        result.silenceIntervals,
+                        analysisRangeInfo.startSeconds
+                    );
+                    mediaDuration = seqSettings && seqSettings.durationSeconds
+                        ? seqSettings.durationSeconds
+                        : analysisRangeInfo.endSeconds;
+                }
 
-                        var silenceIntervals = result.silenceIntervals;
-                        var mediaDuration = result.mediaDuration;
-                        if (analysisRangeInfo && analysisRangeInfo.mode === "inout") {
-                            silenceIntervals = window.Duckycut.cutZones.offsetIntervals(
-                                result.silenceIntervals,
-                                analysisRangeInfo.startSeconds
-                            );
-                            mediaDuration = seqSettings && seqSettings.durationSeconds
-                                ? seqSettings.durationSeconds
-                                : analysisRangeInfo.endSeconds;
-                        }
+                keepZones = computeCleanCutZones(
+                    silenceIntervals,
+                    mediaDuration,
+                    {
+                        paddingIn:       parseInt(elPaddingIn.value, 10)       / 1000,
+                        paddingOut:      parseInt(elPaddingOut.value, 10)      / 1000,
+                        minClipDuration: parseInt(elMinClipDuration.value, 10) / 1000,
+                        minGapDuration:  parseInt(elMinGapFill.value, 10)      / 1000,
+                    }
+                );
 
-                        keepZones = computeCleanCutZones(
-                            silenceIntervals,
-                            mediaDuration,
-                            {
-                                paddingIn:       parseInt(elPaddingIn.value, 10)       / 1000,
-                                paddingOut:      parseInt(elPaddingOut.value, 10)      / 1000,
-                                minClipDuration: parseInt(elMinClipDuration.value, 10) / 1000,
-                                minGapDuration:  parseInt(elMinGapFill.value, 10)      / 1000,
-                            }
-                        );
-
-                        try { nodeFs.unlinkSync(audioPath); } catch (e) {}
-
-                        updateProgress(100, "Analysis complete!");
-                        showResults(result, keepZones, true);
-                        setStatus("Analysis complete — threshold: " + threshold + " dB (rendered mixdown)", "success");
-                        hideProgress(); elBtnAnalyze.disabled = false;
-                    })
-                    .catch(function (err) {
-                        try { nodeFs.unlinkSync(audioPath); } catch (e) {}
-                        setStatus("FFmpeg error: " + err.message, "error");
-                        hideProgress(); elBtnAnalyze.disabled = false;
-                    });
+                updateProgress(100, "Analysis complete!");
+                showResults(result, keepZones, true);
+                setStatus("Analysis complete — threshold: " + threshold + " dB (selected tracks)", "success");
+                hideProgress(); elBtnAnalyze.disabled = false;
             }
         });
     }
@@ -903,6 +799,17 @@
                 return [snapSecondsToFrame(z[0], fps, isNTSC), snapSecondsToFrame(z[1], fps, isNTSC)];
             }).filter(function (z) { return z[1] > z[0]; }));
 
+        const tickCutZones = (window.Duckycut && window.Duckycut.cutZones && window.Duckycut.cutZones.prepareTickCutZonesForApply)
+            ? window.Duckycut.cutZones.prepareTickCutZonesForApply(cutZones, fps, isNTSC)
+            : cutZones.map(function (z) {
+                return {
+                    startSeconds: z[0],
+                    endSeconds: z[1],
+                    startTicks: String(Math.round(z[0] * 254016000000)),
+                    endTicks: String(Math.round(z[1] * 254016000000))
+                };
+            });
+
         if (cutZones.length === 0) {
             setStatus("Nothing to cut — keep zones cover the whole sequence", "info");
             hideProgress(); endApplyCancelMode(); return;
@@ -914,13 +821,25 @@
             fps: fps,
             isNTSC: isNTSC,
             isDropFrame: isDropFrame,
+            tickMode: true,
             range: analysisRangeInfo && analysisRangeInfo.mode === "inout" ? {
                 startSeconds: analysisRangeInfo.startSeconds,
                 endSeconds: analysisRangeInfo.endSeconds
             } : null
         }));
 
-        const zonesToApply = cutZones.slice().sort(function (a, b) { return b[0] - a[0]; });
+        const zonesToApply = tickCutZones.slice().sort(function (a, b) {
+            return Number(b.startTicks) - Number(a.startTicks);
+        });
+        const cutChunks = (window.Duckycut && window.Duckycut.cutZones && window.Duckycut.cutZones.chunkArray)
+            ? window.Duckycut.cutZones.chunkArray(zonesToApply, APPLY_CUTS_CHUNK_SIZE)
+            : (function () {
+                var out = [];
+                for (var i = 0; i < zonesToApply.length; i += APPLY_CUTS_CHUNK_SIZE) {
+                    out.push(zonesToApply.slice(i, i + APPLY_CUTS_CHUNK_SIZE));
+                }
+                return out;
+            }());
 
         function finishCancelled(appliedCount) {
             updateProgress(100, "Cancelado");
@@ -928,13 +847,13 @@
             hideProgress(); endApplyCancelMode();
         }
 
-        function runNextCutZone(index, appliedCount, skippedCount) {
+        function runNextCutChunk(index, appliedCount, skippedCount) {
             if (applyCancelRequested) {
                 finishCancelled(appliedCount);
                 return;
             }
 
-            if (index >= zonesToApply.length) {
+            if (index >= cutChunks.length) {
                 updateProgress(100, "Done!");
                 setStatus("Applied " + appliedCount + " cuts" +
                     (skippedCount ? " (" + skippedCount + " skipped)" : ""), "success");
@@ -943,11 +862,11 @@
             }
 
             updateProgress(
-                Math.min(95, 40 + Math.round((index / zonesToApply.length) * 55)),
-                "Razoring zone " + (index + 1) + " of " + zonesToApply.length + "..."
+                Math.min(95, 40 + Math.round((index / cutChunks.length) * 55)),
+                "Razoring chunk " + (index + 1) + " of " + cutChunks.length + "..."
             );
 
-            evalScript("applyCutsInPlace(" + jsxStringArg(JSON.stringify([zonesToApply[index]])) + ", " + optsArg + ")")
+            evalScript("applyCutsInPlace(" + jsxStringArg(JSON.stringify(cutChunks[index])) + ", " + optsArg + ")")
                 .then(function (raw) {
                     var data = null;
                     try { data = JSON.parse(raw); }
@@ -970,7 +889,7 @@
                     if (data._zoneDiag) console.log("[Duckycut] applyCutsInPlace zone diag:", data._zoneDiag);
 
                     setTimeout(function () {
-                        runNextCutZone(index + 1, appliedCount + (data.applied || 0), skippedCount + (data.skipped || 0));
+                        runNextCutChunk(index + 1, appliedCount + (data.applied || 0), skippedCount + (data.skipped || 0));
                     }, 0);
                 })
                 .catch(function (err) {
@@ -979,7 +898,7 @@
                 });
         }
 
-        runNextCutZone(0, 0, 0);
+        runNextCutChunk(0, 0, 0);
     }
 
     // ── UI Helpers ────────────────────────────────────────────────

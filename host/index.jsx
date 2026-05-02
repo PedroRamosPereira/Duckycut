@@ -972,11 +972,11 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                         try {
                             var vClip = vTrack.clips[vci];
                             if (!vClip) continue;
-                            var cs = 0, ce = 0;
-                            cs = _timeToSecondsPreferTicks(vClip.start);
-                            ce = _timeToSecondsPreferTicks(vClip.end);
-                            var vInside = _clipFullyInside(cs, ce, zStart, zEnd, fps);
-                            _pushCandidate(zoneDiag, "video", vt, vci, cs, ce, vInside);
+                            var csTicks = 0, ceTicks = 0;
+                            csTicks = _timeToTicksPreferTicks(vClip.start);
+                            ceTicks = _timeToTicksPreferTicks(vClip.end);
+                            var vInside = _clipFullyInsideTicks(csTicks, ceTicks, zStartTicks, zEndTicks, fps);
+                            _pushCandidate(zoneDiag, "video", vt, vci, _ticksToSeconds(csTicks), _ticksToSeconds(ceTicks), vInside);
                             if (vInside) {
                                 vClip.remove(true, true);
                                 zoneDiag.removedVideo++;
@@ -992,11 +992,11 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                         try {
                             var aClip = aTrack.clips[aci];
                             if (!aClip) continue;
-                            var as = 0, ae = 0;
-                            as = _timeToSecondsPreferTicks(aClip.start);
-                            ae = _timeToSecondsPreferTicks(aClip.end);
-                            var aInside = _clipFullyInside(as, ae, zStart, zEnd, fps);
-                            _pushCandidate(zoneDiag, "audio", at, aci, as, ae, aInside);
+                            var asTicks = 0, aeTicks = 0;
+                            asTicks = _timeToTicksPreferTicks(aClip.start);
+                            aeTicks = _timeToTicksPreferTicks(aClip.end);
+                            var aInside = _clipFullyInsideTicks(asTicks, aeTicks, zStartTicks, zEndTicks, fps);
+                            _pushCandidate(zoneDiag, "audio", at, aci, _ticksToSeconds(asTicks), _ticksToSeconds(aeTicks), aInside);
                             if (aInside) {
                                 aClip.remove(true, true);
                                 zoneDiag.removedAudio++;

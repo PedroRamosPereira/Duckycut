@@ -105,10 +105,13 @@ test("host applyCutsInPlace removes clips using ticks instead of Premiere second
     const end = host.indexOf("\nfunction muteAudioTracks", start + 1);
     const fn = host.slice(start, end === -1 ? host.length : end);
 
-    assert.match(fn, /_timeToSecondsPreferTicks\(vClip\.start\)/, "video start should be read through tick-preferring helper");
-    assert.match(fn, /_timeToSecondsPreferTicks\(vClip\.end\)/, "video end should be read through tick-preferring helper");
-    assert.match(fn, /_timeToSecondsPreferTicks\(aClip\.start\)/, "audio start should be read through tick-preferring helper");
-    assert.match(fn, /_timeToSecondsPreferTicks\(aClip\.end\)/, "audio end should be read through tick-preferring helper");
+    assert.match(fn, /_timeToTicksPreferTicks\(vClip\.start\)/, "video start should be read as ticks");
+    assert.match(fn, /_timeToTicksPreferTicks\(vClip\.end\)/, "video end should be read as ticks");
+    assert.match(fn, /_timeToTicksPreferTicks\(aClip\.start\)/, "audio start should be read as ticks");
+    assert.match(fn, /_timeToTicksPreferTicks\(aClip\.end\)/, "audio end should be read as ticks");
+    assert.match(fn, /_clipFullyInsideTicks\(/, "clip inclusion should compare ticks");
+    assert.doesNotMatch(fn, /_clipFullyInside\(cs, ce, zStart, zEnd, fps\)/, "video removal should not compare seconds");
+    assert.doesNotMatch(fn, /_clipFullyInside\(as, ae, zStart, zEnd, fps\)/, "audio removal should not compare seconds");
     assert.doesNotMatch(fn, /\.start\.seconds/, "clip start should not use float seconds");
     assert.doesNotMatch(fn, /\.end\.seconds/, "clip end should not use float seconds");
 });

@@ -41,7 +41,7 @@ Critério aceite global: ≤ 1 frame em todas. Se Seq D falhar, ver bloco "WAV s
 
 ## 2. Validar que WAV direto começa em zeroPoint (diagnóstico H5)
 
-Premissa atual: `exportAsMediaDirect(seq, ENCODE_ENTIRE)` exporta `[seq.zeroPoint, seq.end]` e WAV t=0 == zeroPoint. Não testado empiricamente — algumas versões PPro podem ignorar e exportar absoluto.
+Premissa atual: `exportAsMediaDirect(..., ENCODE_ENTIRE)` exporta `[seq.zeroPoint, seq.end]` e WAV t=0 == zeroPoint. Não testado empiricamente — algumas versões PPro podem ignorar e exportar absoluto.
 
 **Validação:** adicionar log temporário em `client/js/main.js` `runDetection`, ANTES de `analysisResult = result`:
 
@@ -61,24 +61,14 @@ Remover log depois.
 
 ---
 
-## 3. Probe no mixdown, não no arquivo-fonte
+## 3. Probe simples no arquivo-fonte — concluído 2026-05-01
 
-`client/js/main.js:runProbe` (linha ~369) chama `getAudioTrackMediaPath(firstSelected)` e roda `volumedetect` no arquivo bruto da PRIMEIRA clip. Problemas:
+`client/js/main.js:runProbe` chama `getAudioTrackMediaPath(firstSelected)` e roda `volumedetect` no arquivo bruto da PRIMEIRA clip. Limitações aceitas:
 - Se A1 selecionada tem 5 clips de origens distintas, calibra só pelo 1º
 - Se usuário seleciona "Audio 2" que tem música, threshold sai calibrado pra música em vez da voz que ele realmente quer cortar
 - Não respeita mute/efeitos da sequência
 
-**Fix proposto:** reutilizar pipeline de export direto do `runAnalysis`. Extrair helper `ensureMixdown(selectedIndices) → Promise<wavPath>`:
-1. Mute tracks não selecionadas
-2. `exportSequenceAudio` → valida arquivo gerado
-3. Restore mutes
-4. Resolve com `tempWav`
-
-Então `runProbe` chama `ensureMixdown([selectedFirst])` → `probeAudio(tempWav)` em vez do `getAudioTrackMediaPath` direto.
-
-Custo: probe fica mais lento (espera export do Premiere). Vale: threshold passa a refletir mix real.
-
-Esforço: ~2h. Toca só `client/js/main.js`.
+**Decisão atual:** manter o `Auto Detect` simples e rápido, sem render/prerender. Ele serve só como calibração inicial de speech level. O render direto e a validação de duração ficam no `Analyze`, onde as faixas selecionadas precisam ser tratadas como um único mix.
 
 ---
 

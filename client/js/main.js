@@ -7,9 +7,9 @@
  *      channel; generator no longer duplicates A1 across all tracks.
  *   3. Framerate: getSequenceSettings() reads timebase directly from the
  *      sequence — no hardcoded 29.97 fallback unless the API truly fails.
- *   4. Audio pre-render: when Analyze is clicked, the panel builds an FFmpeg
- *      mixdown from only the checked audio tracks. FFmpeg then analyses that
- *      rendered file in sequence time, so unchecked tracks cannot affect cuts.
+ *   4. Audio pre-render: when Analyze is clicked, the panel asks Premiere
+ *      to export a WAV mixdown of the checked audio tracks. FFmpeg analyses
+ *      that rendered file, matching the Premiere sequence mix.
  */
 
 (function () {
@@ -113,6 +113,8 @@
     let probeResult     = null;   // { meanVolume, maxVolume, channelCount }
     let seqSettings     = null;   // from getSequenceSettings()
     let paddingLinked   = false;  // whether Padding In/Out are synced
+    let isApplyingCuts  = false;
+    let applyCancelRequested = false;
 
     function getSelectedTrackIndices() {
         return Array.from(document.querySelectorAll(".track-cb:checked"))
@@ -445,25 +447,137 @@
         return evalScript("restoreAudioTrackMutes(" + JSON.stringify(JSON.stringify(savedStates)) + ")");
     }
 
-    function buildSelectedAudioTracks(clips, selectedIdx) {
-        var tracks = selectedIdx.map(function(idx) {
-            return { index: idx, clips: [] };
-        });
-        var byIndex = {};
-        tracks.forEach(function(track) { byIndex[track.index] = track; });
+    function ensureSelectedTrackMixdown(selectedIdx, progressBase, progressSpan) {
+        if (!nodeFs || !nodePath || !nodeOs) {
+            return Promise.reject(new Error("Node.js File I/O unavailable"));
+        }
+        if (!selectedIdx || selectedIdx.length === 0) {
+            return Promise.reject(new Error("Select at least one audio track"));
+        }
 
-        (clips || []).forEach(function(clip) {
-            if (!clip || clip.trackType !== "audio" || !byIndex.hasOwnProperty(clip.trackIndex)) return;
-            byIndex[clip.trackIndex].clips.push({
-                mediaPath: clip.mediaPath,
-                seqStart:  clip.start,
-                seqEnd:    clip.end,
-                srcIn:     typeof clip.mediaIn  === "number" ? clip.mediaIn  : 0,
-                srcOut:    typeof clip.mediaOut === "number" ? clip.mediaOut : 0,
+        var tempWav = nodePath.join(nodeOs.tmpdir(), "duckycut_temp_mixdown_" + Date.now() + ".wav")
+                        .replace(/\\/g, "/");
+        var extensionRoot = csInterface.getSystemPath(SystemPath.EXTENSION)
+                                .replace(/\\/g, "/");
+        var savedMuteStates = null;
+        var expectedDuration = (seqSettings && seqSettings.durationSeconds)
+            || (sequenceInfo && sequenceInfo.durationSeconds) || 0;
+        var pollInterval   = 500;
+        var stableSampleMs = 300;
+        var stableNeeded   = 10;
+        var pollTimeout    = Math.max(180000, Math.round(expectedDuration * 1000 * 0.75));
+        var elapsed        = 0;
+        var base           = progressBase || 10;
+        var span           = progressSpan || 20;
+
+        console.log("[Duckycut] Rendering selected tracks as one mixdown:", JSON.stringify(selectedIdx));
+
+        function cleanupOnError(err) {
+            return restoreMutes(savedMuteStates).then(function() {
+                try { if (nodeFs.existsSync(tempWav)) nodeFs.unlinkSync(tempWav); } catch (e) {}
+                throw err;
             });
-        });
+        }
 
-        return tracks.filter(function(track) { return track.clips.length > 0; });
+        function updateMixProgress(pct, msg) {
+            updateProgress(Math.min(95, base + Math.round(span * pct)), msg);
+        }
+
+        function validateRenderedDuration() {
+            if (!silenceDetector || !silenceDetector.probeAudio || !expectedDuration) {
+                return Promise.resolve(tempWav);
+            }
+            return silenceDetector.probeAudio(tempWav).then(function(probe) {
+                var renderedDuration = probe && probe.durationSeconds ? probe.durationSeconds : 0;
+                var tolerance = Math.max(1, expectedDuration * 0.01);
+                console.log("[Duckycut] mixdown duration=", renderedDuration,
+                    "expected=", expectedDuration, "tolerance=", tolerance);
+                if (renderedDuration && renderedDuration < expectedDuration - tolerance) {
+                    throw new Error("Mixdown duration is shorter than sequence duration; possible duration mismatch/truncated Premiere render");
+                }
+                return tempWav;
+            });
+        }
+
+        function waitForStableSize() {
+            return new Promise(function(resolve, reject) {
+                var lastSize = -1;
+                var stableCount = 0;
+
+                function sample() {
+                    var size = -1;
+                    try { size = nodeFs.statSync(tempWav).size; } catch (e) {}
+
+                    if (size > 0 && size === lastSize) {
+                        stableCount++;
+                        if (stableCount >= stableNeeded) {
+                            console.log("[Duckycut] mixdown stable size=", size, "bytes");
+                            validateRenderedDuration().then(resolve, reject);
+                            return;
+                        }
+                    } else {
+                        stableCount = 0;
+                    }
+                    lastSize = size;
+
+                    elapsed += stableSampleMs;
+                    if (elapsed >= pollTimeout) {
+                        reject(new Error("Timeout waiting for Premiere render to finish"));
+                        return;
+                    }
+
+                    var sizeMB = size > 0 ? (Math.round(size / 1024 / 1024 * 10) / 10) : 0;
+                    updateMixProgress(
+                        0.65 + Math.min(0.25, stableCount / stableNeeded * 0.25),
+                        "Rendering directly in Premiere... " +
+                            (sizeMB > 0 ? sizeMB + " MB" : "")
+                    );
+                    setTimeout(sample, stableSampleMs);
+                }
+                sample();
+            });
+        }
+
+        function waitForFile() {
+            return new Promise(function(resolve, reject) {
+                function tick() {
+                    if (nodeFs.existsSync(tempWav)) {
+                        waitForStableSize().then(resolve, reject);
+                        return;
+                    }
+                    elapsed += pollInterval;
+                    if (elapsed >= pollTimeout) {
+                        reject(new Error("Timeout: Premiere didn't produce the WAV"));
+                        return;
+                    }
+                    updateMixProgress(0.25, "Waiting for Premiere render output...");
+                    setTimeout(tick, pollInterval);
+                }
+                tick();
+            });
+        }
+
+        updateMixProgress(0.05, "Muting unselected audio tracks...");
+        return evalScript("muteAudioTracks(" + JSON.stringify(JSON.stringify(selectedIdx)) + ")")
+            .then(function(muteRaw) {
+                var mr = {};
+                try { mr = JSON.parse(muteRaw); } catch(e) {}
+                if (!mr.success) throw new Error("Failed to mute tracks: " + (mr.error || "unknown"));
+                savedMuteStates = mr.savedStates;
+
+                updateMixProgress(0.15, "Rendering sequence audio directly in Premiere...");
+                return evalScript("exportSequenceAudio(" + jsxStringArg(tempWav) + "," + jsxStringArg(extensionRoot) + ")");
+            })
+            .then(function(r) {
+                var res = {};
+                try { res = JSON.parse(r); } catch (e) {}
+                if (!res.success) throw new Error("Mixdown failed: " + (res.error || "unknown"));
+                return waitForFile();
+            })
+            .then(function(path) {
+                return restoreMutes(savedMuteStates).then(function() { return path; });
+            })
+            .catch(cleanupOnError);
     }
 
     function runAnalysis() {
@@ -506,44 +620,47 @@
             var threshold   = computeThreshold(elAggressiveness.value);
             var minDuration = parseInt(elMinDuration.value, 10) / 1000;
 
-            var selectedTracks = buildSelectedAudioTracks(sequenceClips, selectedIdx);
-            if (selectedTracks.length === 0) {
-                setStatus("Selected audio tracks have no readable clips", "error");
-                hideProgress(); elBtnAnalyze.disabled = false;
-                return;
-            }
-
-            console.log("[Duckycut] Selected audio tracks for analysis:", JSON.stringify(selectedTracks.map(function(track) {
-                return { index: track.index, clips: track.clips.length };
-            })));
-
-            updateProgress(15, "Mixing selected audio tracks...");
-
-            silenceDetector.detectSilenceFromSequence(selectedTracks, threshold, minDuration)
-                .then(function (result) {
-                    analysisResult = result;
-                    updateProgress(80, "Applying Clean Cut algorithm...");
-
-                    keepZones = computeCleanCutZones(
-                        result.silenceIntervals,
-                        result.mediaDuration,
-                        {
-                            paddingIn:       parseInt(elPaddingIn.value, 10)       / 1000,
-                            paddingOut:      parseInt(elPaddingOut.value, 10)      / 1000,
-                            minClipDuration: parseInt(elMinClipDuration.value, 10) / 1000,
-                            minGapDuration:  parseInt(elMinGapFill.value, 10)      / 1000,
-                        }
-                    );
-
-                    updateProgress(100, "Analysis complete!");
-                    showResults(result, keepZones, true);
-                    setStatus("Analysis complete — threshold: " + threshold + " dB (selected tracks only)", "success");
-                    hideProgress(); elBtnAnalyze.disabled = false;
+            ensureSelectedTrackMixdown(selectedIdx, 10, 25)
+                .then(function(tempWav) {
+                    runDetection(tempWav);
                 })
-                .catch(function (err) {
-                    setStatus("FFmpeg error: " + err.message, "error");
+                .catch(function(err) {
+                    setStatus("Analysis error: " + (err.message || "unknown"), "error");
                     hideProgress(); elBtnAnalyze.disabled = false;
                 });
+
+            function runDetection(audioPath) {
+                updateProgress(25, "Running FFmpeg silence detection (rendered mixdown)...");
+
+                silenceDetector.detectSilence(audioPath, threshold, minDuration)
+                    .then(function (result) {
+                        analysisResult = result;
+                        updateProgress(80, "Applying Clean Cut algorithm...");
+
+                        keepZones = computeCleanCutZones(
+                            result.silenceIntervals,
+                            result.mediaDuration,
+                            {
+                                paddingIn:       parseInt(elPaddingIn.value, 10)       / 1000,
+                                paddingOut:      parseInt(elPaddingOut.value, 10)      / 1000,
+                                minClipDuration: parseInt(elMinClipDuration.value, 10) / 1000,
+                                minGapDuration:  parseInt(elMinGapFill.value, 10)      / 1000,
+                            }
+                        );
+
+                        try { nodeFs.unlinkSync(audioPath); } catch (e) {}
+
+                        updateProgress(100, "Analysis complete!");
+                        showResults(result, keepZones, true);
+                        setStatus("Analysis complete — threshold: " + threshold + " dB (rendered mixdown)", "success");
+                        hideProgress(); elBtnAnalyze.disabled = false;
+                    })
+                    .catch(function (err) {
+                        try { nodeFs.unlinkSync(audioPath); } catch (e) {}
+                        setStatus("FFmpeg error: " + err.message, "error");
+                        hideProgress(); elBtnAnalyze.disabled = false;
+                    });
+            }
         });
     }
 
@@ -648,10 +765,40 @@
 
     // ── Apply Cuts ───────────────────────────────────────────────
     function applyCuts() {
+        if (isApplyingCuts) {
+            cancelApplyCutsFromPanel();
+            return;
+        }
         if (!keepZones || keepZones.length === 0) {
             setStatus("No keep zones — run analysis first", "error"); return;
         }
         return applyCutsInPlaceFromPanel();
+    }
+
+    function beginApplyCancelMode() {
+        isApplyingCuts = true;
+        applyCancelRequested = false;
+        elBtnApply.disabled = false;
+        elBtnApply.textContent = "Cancelar";
+        elBtnApply.classList.add("btn-danger");
+        elBtnApply.title = "Cancelar cortes imediatamente";
+    }
+
+    function endApplyCancelMode() {
+        isApplyingCuts = false;
+        applyCancelRequested = false;
+        elBtnApply.disabled = false;
+        elBtnApply.textContent = "Apply Cuts";
+        elBtnApply.classList.remove("btn-danger");
+        elBtnApply.title = "";
+    }
+
+    function cancelApplyCutsFromPanel() {
+        if (applyCancelRequested) return;
+        applyCancelRequested = true;
+        updateProgress(100, "Cancelando cortes...");
+        setStatus("Cancelando cortes...", "error");
+        evalScript("cancelApplyCuts()").catch(function () {});
     }
 
     // Snap a sub-frame seconds value onto the nearest frame boundary using the
@@ -670,14 +817,14 @@
     }
 
     function applyCutsInPlaceFromPanel() {
-        elBtnApply.disabled = true;
+        beginApplyCancelMode();
         showProgress("Computing cut zones...");
 
         const totalDuration = (analysisResult && analysisResult.mediaDuration)
             || (seqSettings && seqSettings.durationSeconds) || 0;
         if (!totalDuration) {
             setStatus("Unknown sequence duration", "error");
-            hideProgress(); elBtnApply.disabled = false; return;
+            hideProgress(); endApplyCancelMode(); return;
         }
 
         const fps    = (seqSettings && seqSettings.framerate)
@@ -708,45 +855,75 @@
 
         if (cutZones.length === 0) {
             setStatus("Nothing to cut — keep zones cover the whole sequence", "info");
-            hideProgress(); elBtnApply.disabled = false; return;
+            hideProgress(); endApplyCancelMode(); return;
         }
 
         updateProgress(40, "Razoring " + cutZones.length + " zones...");
-
-        if (!nodeFs || !nodePath || !nodeOs) {
-            setStatus("Cut error: Node.js File I/O unavailable", "error");
-            hideProgress(); elBtnApply.disabled = false; return;
-        }
-
-        const cutZonesPath = nodePath.join(nodeOs.tmpdir(), "duckycut_cuts_" + Date.now() + ".json");
-        try {
-            nodeFs.writeFileSync(cutZonesPath, JSON.stringify(cutZones), "utf8");
-        } catch (eWrite) {
-            setStatus("Cut error: failed to write temp cuts file: " + eWrite.message, "error");
-            hideProgress(); elBtnApply.disabled = false; return;
-        }
 
         const optsArg  = JSON.stringify(JSON.stringify({
             fps: fps, isNTSC: isNTSC, isDropFrame: isDropFrame
         }));
 
-        evalScript("applyCutsInPlaceFile(" + jsxStringArg(cutZonesPath) + ", " + optsArg + ")").then(function (raw) {
-            try {
-                const data = JSON.parse(raw);
-                if (data.success) {
-                    updateProgress(100, "Done!");
-                    setStatus("Applied " + data.applied + " cuts" +
-                        (data.skipped ? " (" + data.skipped + " skipped)" : ""), "success");
-                    if (data._diag) console.log("[Duckycut] applyCutsInPlace diag:", data._diag);
-                } else {
-                    setStatus("Cut error: " + (data.error || "unknown"), "error");
-                }
-            } catch (e) {
-                setStatus("Cut parse error: " + e.message + " :: raw=" + raw, "error");
+        const zonesToApply = cutZones.slice().sort(function (a, b) { return b[0] - a[0]; });
+
+        function finishCancelled(appliedCount) {
+            updateProgress(100, "Cancelado");
+            setStatus("Cortes cancelados" + (appliedCount ? " após " + appliedCount + " zonas" : ""), "error");
+            hideProgress(); endApplyCancelMode();
+        }
+
+        function runNextCutZone(index, appliedCount, skippedCount) {
+            if (applyCancelRequested) {
+                finishCancelled(appliedCount);
+                return;
             }
-            try { nodeFs.unlinkSync(cutZonesPath); } catch (eUnlink) {}
-            hideProgress(); elBtnApply.disabled = false;
-        });
+
+            if (index >= zonesToApply.length) {
+                updateProgress(100, "Done!");
+                setStatus("Applied " + appliedCount + " cuts" +
+                    (skippedCount ? " (" + skippedCount + " skipped)" : ""), "success");
+                hideProgress(); endApplyCancelMode();
+                return;
+            }
+
+            updateProgress(
+                Math.min(95, 40 + Math.round((index / zonesToApply.length) * 55)),
+                "Razoring zone " + (index + 1) + " of " + zonesToApply.length + "..."
+            );
+
+            evalScript("applyCutsInPlace(" + jsxStringArg(JSON.stringify([zonesToApply[index]])) + ", " + optsArg + ")")
+                .then(function (raw) {
+                    var data = null;
+                    try { data = JSON.parse(raw); }
+                    catch (e) {
+                        setStatus("Cut parse error: " + e.message + " :: raw=" + raw, "error");
+                        hideProgress(); endApplyCancelMode();
+                        return;
+                    }
+
+                    if (data.cancelled || applyCancelRequested) {
+                        finishCancelled(appliedCount + (data.applied || 0));
+                        return;
+                    }
+                    if (!data.success) {
+                        setStatus("Cut error: " + (data.error || "unknown"), "error");
+                        hideProgress(); endApplyCancelMode();
+                        return;
+                    }
+                    if (data._diag) console.log("[Duckycut] applyCutsInPlace diag:", data._diag);
+                    if (data._zoneDiag) console.log("[Duckycut] applyCutsInPlace zone diag:", data._zoneDiag);
+
+                    setTimeout(function () {
+                        runNextCutZone(index + 1, appliedCount + (data.applied || 0), skippedCount + (data.skipped || 0));
+                    }, 0);
+                })
+                .catch(function (err) {
+                    setStatus("Cut error: " + (err.message || "unknown"), "error");
+                    hideProgress(); endApplyCancelMode();
+                });
+        }
+
+        runNextCutZone(0, 0, 0);
     }
 
     // ── UI Helpers ────────────────────────────────────────────────

@@ -34,6 +34,7 @@ if (typeof JSON === "undefined") {
 }
 
 var TICKS = 254016000000;
+var DUCKYCUT_CANCEL_APPLY = false;
 
 function ticksToSeconds(t) {
     try { return Number(t) / TICKS; } catch(e) { return 0; }
@@ -127,6 +128,15 @@ function _clipFullyInside(clipStartSec, clipEndSec, zoneStartSec, zoneEndSec, fp
     var tol = (fps && fps > 0) ? (1.5 / fps) : 0.06;
     return (clipStartSec >= zoneStartSec - tol) &&
            (clipEndSec   <= zoneEndSec   + tol);
+}
+
+function _isApplyCutsCancelled() {
+    return DUCKYCUT_CANCEL_APPLY === true;
+}
+
+function cancelApplyCuts() {
+    DUCKYCUT_CANCEL_APPLY = true;
+    return '{"success":true,"cancelled":true}';
 }
 
 /**
@@ -554,7 +564,7 @@ function exportSequenceAudio(outputPath, extensionPath) {
         }
 
         // ── Export directly through Premiere ────────────────────────
-        // exportAsMediaDirect(sequence, outputPath, presetPath, encodeType)
+        // exportAsMediaDirect(outputPath, presetPath, encodeType)
         // encodeType 0 = ENCODE_ENTIRE, ignoring sequence In/Out markers.
         try {
             seq.exportAsMediaDirect(
@@ -704,6 +714,8 @@ function getSequenceSettings() {
  */
 function applyCutsInPlace(cutZonesJson, optsJson) {
     try {
+        DUCKYCUT_CANCEL_APPLY = false;
+
         var seq = app.project.activeSequence;
         if (!seq) return '{"success":false,"error":"No active sequence"}';
 
@@ -729,6 +741,7 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
 
         var applied = 0, skipped = 0;
         var diag = [];
+        var zoneDiagnostics = [];
 
         // razor() uses display timecode (relative to seq.zeroPoint).
         // If the sequence doesn't start at 00:00:00:00, add the offset so
@@ -749,13 +762,61 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
             return _secondsToTimecodeHost(secs + zpSec, fps, isNTSC);
         }
 
+        function _cancelledResult() {
+            return '{"success":false,"cancelled":true,"applied":' + applied + ',"skipped":' + skipped + '}';
+        }
+
+        function _countTimelineClips(s) {
+            var video = 0, audio = 0;
+            try {
+                for (var cv = 0; cv < s.videoTracks.numTracks; cv++) {
+                    try { video += s.videoTracks[cv].clips.numItems; } catch (eVCount) {}
+                }
+            } catch (eVTotal) {}
+            try {
+                for (var ca = 0; ca < s.audioTracks.numTracks; ca++) {
+                    try { audio += s.audioTracks[ca].clips.numItems; } catch (eACount) {}
+                }
+            } catch (eATotal) {}
+            return { video: video, audio: audio, total: video + audio };
+        }
+
+        function _pushCandidate(zoneDiag, kind, trackIndex, clipIndex, startSec, endSec, inside) {
+            if (zoneDiag.candidateClips.length >= 12) return;
+            var tol = (fps && fps > 0) ? (3 / fps) : 0.1;
+            var intersects = (endSec >= zoneDiag.zStart - tol) && (startSec <= zoneDiag.zEnd + tol);
+            if (!inside && !intersects) return;
+            zoneDiag.candidateClips.push({
+                kind: kind,
+                trackIndex: trackIndex,
+                clipIndex: clipIndex,
+                start: startSec,
+                end: endSec,
+                inside: inside
+            });
+        }
+
         for (var z = 0; z < zones.length; z++) {
+            if (_isApplyCutsCancelled()) return _cancelledResult();
+
             var zStart = Number(zones[z][0]);
             var zEnd   = Number(zones[z][1]);
             if (!(zEnd > zStart)) { skipped++; continue; }
 
             var startTC = _zoneToTC(zStart);
             var endTC   = _zoneToTC(zEnd);
+            var zoneDiag = {
+                zoneIndex: z,
+                zStart: zStart,
+                zEnd: zEnd,
+                startTC: startTC,
+                endTC: endTC,
+                clipsBefore: _countTimelineClips(seq),
+                clipsAfterRazor: null,
+                removedVideo: 0,
+                removedAudio: 0,
+                candidateClips: []
+            };
 
             try {
                 for (var v = 0; v < qeSeq.numVideoTracks; v++) {
@@ -768,49 +829,68 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                 }
             } catch (eRazor) {
                 diag.push("razor zone " + z + " failed: " + eRazor.toString());
+                zoneDiag.razorError = eRazor.toString();
+                zoneDiagnostics.push(zoneDiag);
                 skipped++;
                 continue;
             }
+
+            if (_isApplyCutsCancelled()) return _cancelledResult();
 
             // Resync regular API after QE DOM razor — without this, clips[vci].start
             // may still reflect pre-razor geometry and _clipFullyInside never matches.
             try { $.sleep(50); } catch(eSleep) {}
             try { seq = app.project.activeSequence; } catch(eResync) {}
+            zoneDiag.clipsAfterRazor = _countTimelineClips(seq);
 
             try {
                 for (var vt = 0; vt < seq.videoTracks.numTracks; vt++) {
+                    if (_isApplyCutsCancelled()) return _cancelledResult();
                     var vTrack = seq.videoTracks[vt];
                     for (var vci = vTrack.clips.numItems - 1; vci >= 0; vci--) {
+                        if (_isApplyCutsCancelled()) return _cancelledResult();
                         try {
                             var vClip = vTrack.clips[vci];
                             if (!vClip) continue;
                             var cs = 0, ce = 0;
                             cs = _timeToSecondsPreferTicks(vClip.start);
                             ce = _timeToSecondsPreferTicks(vClip.end);
-                            if (_clipFullyInside(cs, ce, zStart, zEnd, fps)) {
+                            var vInside = _clipFullyInside(cs, ce, zStart, zEnd, fps);
+                            _pushCandidate(zoneDiag, "video", vt, vci, cs, ce, vInside);
+                            if (vInside) {
                                 vClip.remove(true, true);
+                                zoneDiag.removedVideo++;
                             }
                         } catch (eRem) { diag.push("V remove fail t=" + vt + " c=" + vci + ": " + eRem.toString()); }
                     }
                 }
                 for (var at = 0; at < seq.audioTracks.numTracks; at++) {
+                    if (_isApplyCutsCancelled()) return _cancelledResult();
                     var aTrack = seq.audioTracks[at];
                     for (var aci = aTrack.clips.numItems - 1; aci >= 0; aci--) {
+                        if (_isApplyCutsCancelled()) return _cancelledResult();
                         try {
                             var aClip = aTrack.clips[aci];
                             if (!aClip) continue;
                             var as = 0, ae = 0;
                             as = _timeToSecondsPreferTicks(aClip.start);
                             ae = _timeToSecondsPreferTicks(aClip.end);
-                            if (_clipFullyInside(as, ae, zStart, zEnd, fps)) {
+                            var aInside = _clipFullyInside(as, ae, zStart, zEnd, fps);
+                            _pushCandidate(zoneDiag, "audio", at, aci, as, ae, aInside);
+                            if (aInside) {
                                 aClip.remove(true, true);
+                                zoneDiag.removedAudio++;
                             }
                         } catch (eRem) { diag.push("A remove fail t=" + at + " c=" + aci + ": " + eRem.toString()); }
                     }
                 }
-                applied++;
+                if (zoneDiag.removedVideo + zoneDiag.removedAudio > 0) applied++;
+                else skipped++;
+                zoneDiagnostics.push(zoneDiag);
             } catch (eRemAll) {
                 diag.push("remove block zone " + z + " failed: " + eRemAll.toString());
+                zoneDiag.removeError = eRemAll.toString();
+                zoneDiagnostics.push(zoneDiag);
                 skipped++;
             }
         }
@@ -830,16 +910,19 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         }
 
         var result = '{"success":true,"applied":' + applied + ',"skipped":' + skipped;
-        if (diag.length) {
+            if (diag.length) {
             var diagStr = '[';
             for (var d = 0; d < diag.length; d++) {
                 if (d > 0) diagStr += ',';
                 diagStr += '"' + String(diag[d]).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
             }
             diagStr += ']';
-            result += ',"_diag":' + diagStr;
-        }
-        result += '}';
+                result += ',"_diag":' + diagStr;
+            }
+            if (zoneDiagnostics.length) {
+                result += ',"_zoneDiag":' + JSON.stringify(zoneDiagnostics);
+            }
+            result += '}';
         return result;
     } catch (e) {
         return '{"success":false,"error":"' + e.toString().replace(/"/g, '\\"') + '"}';

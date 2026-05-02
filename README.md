@@ -31,7 +31,7 @@ No Windows, habilite extensoes CEP sem assinatura criando `PlayerDebugMode=1` em
 npm test
 ```
 
-Os testes automatizados cobrem matematica de timecode, zeroPoint, cut zones e o caminho de export direto. Smoke tests reais ainda precisam rodar no Premiere, porque CEP, QE DOM e `exportAsMediaDirect` dependem do aplicativo Adobe.
+Os testes automatizados cobrem matematica de timecode, zeroPoint, cut zones e o caminho de export direto via Premiere. Smoke tests reais ainda precisam rodar no Premiere, porque CEP, QE DOM e `exportAsMediaDirect` dependem do aplicativo Adobe.
 
 ## Smoke Test Manual Minimo
 

@@ -51,18 +51,22 @@ function probeAudio(mediaPath) {
                 if (chMatch) channelCount = parseInt(chMatch[1], 10);
             }
 
-            const durMatch = output.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
-            let durationSeconds = 0;
-            if (durMatch) {
-                durationSeconds =
-                    parseInt(durMatch[1]) * 3600 +
-                    parseInt(durMatch[2]) * 60   +
-                    parseInt(durMatch[3])         +
-                    parseInt(durMatch[4]) / 100;
-            }
+            const durationSeconds = parseFfmpegDuration(output);
             resolve({ meanVolume, maxVolume, channelCount, durationSeconds });
         });
     });
+}
+
+function parseFfmpegDuration(output) {
+    const match = String(output || "").match(/Duration:\s*(\d+):(\d+):(\d+)(?:\.(\d+))?/);
+    if (!match) return 0;
+    const fraction = match[4] ? Number(`0.${match[4]}`) : 0;
+    return (
+        parseInt(match[1], 10) * 3600 +
+        parseInt(match[2], 10) * 60 +
+        parseInt(match[3], 10) +
+        fraction
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -89,15 +93,7 @@ function detectSilence(mediaPath, thresholdDb, minDuration) {
                 return;
             }
             const silenceIntervals = parseSilenceOutput(output);
-            const durationMatch = output.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
-            let mediaDuration = 0;
-            if (durationMatch) {
-                mediaDuration =
-                    parseInt(durationMatch[1]) * 3600 +
-                    parseInt(durationMatch[2]) * 60   +
-                    parseInt(durationMatch[3])         +
-                    parseInt(durationMatch[4]) / 100;
-            }
+            const mediaDuration = parseFfmpegDuration(output);
             let totalSilenceDuration = 0;
             for (const iv of silenceIntervals) totalSilenceDuration += iv[1] - iv[0];
             resolve({
@@ -275,4 +271,4 @@ function formatTime(seconds) {
     return `${m}m ${s}s`;
 }
 
-module.exports = { detectSilence, probeAudio, detectSilenceFromSequence, buildMixedAudio };
+module.exports = { detectSilence, probeAudio, detectSilenceFromSequence, buildMixedAudio, parseFfmpegDuration };

@@ -856,7 +856,7 @@
 
             if (index >= cutChunks.length) {
                 updateProgress(100, "Done!");
-                setStatus("Applied " + appliedCount + " cuts" +
+                setStatus("Deleted " + appliedCount + " zones" +
                     (skippedCount ? " (" + skippedCount + " skipped)" : ""), "success");
                 hideProgress(); endApplyCancelMode();
                 return;
@@ -881,13 +881,13 @@
                         finishCancelled(appliedCount + (data.applied || 0));
                         return;
                     }
+                    if (data._diag) console.log("[Duckycut] applyCutsInPlace diag:", data._diag);
+                    if (data._zoneDiag) console.log("[Duckycut] applyCutsInPlace zone diag:", data._zoneDiag);
                     if (!data.success) {
                         setStatus("Cut error: " + (data.error || "unknown"), "error");
                         hideProgress(); endApplyCancelMode();
                         return;
                     }
-                    if (data._diag) console.log("[Duckycut] applyCutsInPlace diag:", data._diag);
-                    if (data._zoneDiag) console.log("[Duckycut] applyCutsInPlace zone diag:", data._zoneDiag);
 
                     setTimeout(function () {
                         runNextCutChunk(index + 1, appliedCount + (data.applied || 0), skippedCount + (data.skipped || 0));

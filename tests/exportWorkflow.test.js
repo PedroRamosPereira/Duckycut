@@ -105,10 +105,8 @@ test("host applyCutsInPlace removes clips using ticks instead of Premiere second
     const end = host.indexOf("\nfunction muteAudioTracks", start + 1);
     const fn = host.slice(start, end === -1 ? host.length : end);
 
-    assert.match(fn, /_timeToTicksPreferTicks\(vClip\.start\)/, "video start should be read as ticks");
-    assert.match(fn, /_timeToTicksPreferTicks\(vClip\.end\)/, "video end should be read as ticks");
-    assert.match(fn, /_timeToTicksPreferTicks\(aClip\.start\)/, "audio start should be read as ticks");
-    assert.match(fn, /_timeToTicksPreferTicks\(aClip\.end\)/, "audio end should be read as ticks");
+    assert.match(fn, /_timeToTicksPreferTicks\([^)]*Clip\.start\)/, "clip starts should be read as ticks");
+    assert.match(fn, /_timeToTicksPreferTicks\([^)]*Clip\.end\)/, "clip ends should be read as ticks");
     assert.match(fn, /_clipFullyInsideTicks\(/, "clip inclusion should compare ticks");
     assert.doesNotMatch(fn, /_clipFullyInside\(cs, ce, zStart, zEnd, fps\)/, "video removal should not compare seconds");
     assert.doesNotMatch(fn, /_clipFullyInside\(as, ae, zStart, zEnd, fps\)/, "audio removal should not compare seconds");
@@ -159,8 +157,64 @@ test("host applyCutsInPlace reports per-zone diagnostics for failed removals", (
     assert.match(fn, /removedAudio/, "diagnostics should count removed audio clips per zone");
     assert.match(fn, /clipsBefore/, "diagnostics should record clip counts before razor");
     assert.match(fn, /clipsAfterRazor/, "diagnostics should record clip counts after razor/API refresh");
+    assert.match(fn, /refreshAttempts/, "diagnostics should record how many refresh attempts were needed after razor");
+    assert.match(fn, /_waitForRazorRefresh\(/, "host should poll for regular DOM refresh instead of relying on one fixed sleep");
+    assert.match(fn, /_waitForContainedTargets\(/, "host should retry until post-razor contained targets are visible");
     assert.match(fn, /candidateClips/, "diagnostics should include nearby rejected clip candidates");
     assert.match(fn, /"_zoneDiag"/, "applyCutsInPlace should return the per-zone diagnostics payload");
+});
+
+test("host target polling can collect contained clips without diagnostics", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function applyCutsInPlace");
+    assert.notEqual(start, -1, "applyCutsInPlace should exist");
+
+    const end = host.indexOf("\nfunction applyCutsInPlaceFile", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /function _pushCandidate\([\s\S]*if \(!zoneDiag\) return/, "_pushCandidate should tolerate null zoneDiag during polling");
+    assert.match(fn, /_collectZoneContainedClipTargets\(targetSeq, zoneStartTicks, zoneEndTicks, null\)/, "target polling should be able to collect without logging candidates");
+});
+
+test("host target polling suppresses transient collect errors while diagnostics are disabled", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function applyCutsInPlace");
+    assert.notEqual(start, -1, "applyCutsInPlace should exist");
+
+    const end = host.indexOf("\nfunction applyCutsInPlaceFile", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /catch \(eCV\) \{ if \(zoneDiag\) diag\.push\("V collect fail/, "video polling with null zoneDiag should not spam diag on transient clip read errors");
+    assert.match(fn, /catch \(eCA\) \{ if \(zoneDiag\) diag\.push\("A collect fail/, "audio polling with null zoneDiag should not spam diag on transient clip read errors");
+});
+
+test("host applyCutsInPlace refuses orphan razors that delete no clips", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function applyCutsInPlace");
+    assert.notEqual(start, -1, "applyCutsInPlace should exist");
+
+    const end = host.indexOf("\nfunction applyCutsInPlaceFile", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /_clipIntersectsTicks\(/, "host should detect clips intersecting the zone before razor");
+    assert.match(fn, /_collectZoneIntersectingClips\(/, "host should collect pre-razor targets before mutating the timeline");
+    assert.match(fn, /preflightTargets/, "zone diagnostics should include pre-razor target count");
+    assert.match(fn, /preflightTargets\.total\s*===\s*0[\s\S]*continue/, "zones with no targets should be skipped before razor");
+    assert.match(fn, /removeTargets\.total\s*===\s*0[\s\S]*_waitForContainedTargets\(/, "zero-delete guard should retry target discovery before failing");
+    assert.match(fn, /deleteRequired/, "host should flag a razor that removed zero clips as an error");
+    assert.match(fn, /success:\s*false[\s\S]*deleteRequired:\s*true/, "zero-delete razor should fail instead of being counted as skipped");
+});
+
+test("panel reports deleted zones, not generic applied cuts", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function applyCutsInPlaceFromPanel");
+    assert.notEqual(start, -1, "applyCutsInPlaceFromPanel should exist");
+
+    const end = main.indexOf("\n    // ── UI Helpers", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /Deleted "\s*\+\s*appliedCount\s*\+\s*" zones/, "success status should describe deleted zones");
+    assert.doesNotMatch(fn, /Applied "\s*\+\s*appliedCount\s*\+\s*" cuts/, "success status should not imply razor-only success");
 });
 
 test("panel logs per-zone Apply Cuts diagnostics returned by the host", () => {
@@ -172,6 +226,10 @@ test("panel logs per-zone Apply Cuts diagnostics returned by the host", () => {
 
     assert.match(fn, /_zoneDiag/, "panel should read host per-zone diagnostics");
     assert.match(fn, /applyCutsInPlace zone diag/, "panel should log zone diagnostics with a searchable label");
+    assert.ok(
+        fn.indexOf("if (data._zoneDiag)") < fn.indexOf("if (!data.success)"),
+        "panel should log diagnostics before returning on host errors"
+    );
 });
 
 test("panel turns Apply Cuts into a red Cancel button while cuts are running", () => {

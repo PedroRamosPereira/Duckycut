@@ -826,6 +826,7 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         }
 
         function _pushCandidate(zoneDiag, kind, trackIndex, clipIndex, startSec, endSec, inside) {
+            if (!zoneDiag) return;
             if (zoneDiag.candidateClips.length >= 12) return;
             var tol = (fps && fps > 0) ? (3 / fps) : 0.1;
             var intersects = (endSec >= zoneDiag.zStart - tol) && (startSec <= zoneDiag.zEnd + tol);
@@ -898,6 +899,146 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                    (clipEndTicks   <= zoneEndTicks   + tolTicks);
         }
 
+        function _clipIntersectsTicks(clipStartTicks, clipEndTicks, zoneStartTicks, zoneEndTicks, fps) {
+            var frameTicks = (fps && fps > 0) ? Math.round(TICKS / fps) : Math.round(TICKS / 30);
+            var tolTicks = Math.round(frameTicks * 1.5);
+            return (clipEndTicks > zoneStartTicks - tolTicks) &&
+                   (clipStartTicks < zoneEndTicks + tolTicks);
+        }
+
+        function _collectZoneIntersectingClips(s, zoneStartTicks, zoneEndTicks, zoneDiag) {
+            var targets = { video: 0, audio: 0, total: 0 };
+            try {
+                for (var pvt = 0; pvt < s.videoTracks.numTracks; pvt++) {
+                    var pvTrack = s.videoTracks[pvt];
+                    for (var pvci = 0; pvci < pvTrack.clips.numItems; pvci++) {
+                        try {
+                            var pvClip = pvTrack.clips[pvci];
+                            if (!pvClip) continue;
+                            var pvs = _timeToTicksPreferTicks(pvClip.start);
+                            var pve = _timeToTicksPreferTicks(pvClip.end);
+                            if (_clipIntersectsTicks(pvs, pve, zoneStartTicks, zoneEndTicks, fps)) {
+                                targets.video++;
+                                targets.total++;
+                                if (zoneDiag) _pushCandidate(zoneDiag, "video", pvt, pvci, _ticksToSeconds(pvs), _ticksToSeconds(pve), false);
+                            }
+                        } catch (ePV) {}
+                    }
+                }
+            } catch (ePVAll) {}
+            try {
+                for (var pat = 0; pat < s.audioTracks.numTracks; pat++) {
+                    var paTrack = s.audioTracks[pat];
+                    for (var paci = 0; paci < paTrack.clips.numItems; paci++) {
+                        try {
+                            var paClip = paTrack.clips[paci];
+                            if (!paClip) continue;
+                            var pas = _timeToTicksPreferTicks(paClip.start);
+                            var pae = _timeToTicksPreferTicks(paClip.end);
+                            if (_clipIntersectsTicks(pas, pae, zoneStartTicks, zoneEndTicks, fps)) {
+                                targets.audio++;
+                                targets.total++;
+                                if (zoneDiag) _pushCandidate(zoneDiag, "audio", pat, paci, _ticksToSeconds(pas), _ticksToSeconds(pae), false);
+                            }
+                        } catch (ePA) {}
+                    }
+                }
+            } catch (ePAAll) {}
+            return targets;
+        }
+
+        function _collectZoneContainedClipTargets(s, zoneStartTicks, zoneEndTicks, zoneDiag) {
+            var targets = { video: [], audio: [], total: 0 };
+            try {
+                for (var cvt = 0; cvt < s.videoTracks.numTracks; cvt++) {
+                    var cvTrack = s.videoTracks[cvt];
+                    for (var cvci = cvTrack.clips.numItems - 1; cvci >= 0; cvci--) {
+                        try {
+                            var cvClip = cvTrack.clips[cvci];
+                            if (!cvClip) continue;
+                            var cvs = _timeToTicksPreferTicks(cvClip.start);
+                            var cve = _timeToTicksPreferTicks(cvClip.end);
+                            var cvInside = _clipFullyInsideTicks(cvs, cve, zoneStartTicks, zoneEndTicks, fps);
+                            _pushCandidate(zoneDiag, "video", cvt, cvci, _ticksToSeconds(cvs), _ticksToSeconds(cve), cvInside);
+                            if (cvInside) {
+                                targets.video.push(cvClip);
+                                targets.total++;
+                            }
+                        } catch (eCV) { if (zoneDiag) diag.push("V collect fail t=" + cvt + " c=" + cvci + ": " + eCV.toString()); }
+                    }
+                }
+            } catch (eCVAll) {}
+            try {
+                for (var cat = 0; cat < s.audioTracks.numTracks; cat++) {
+                    var caTrack = s.audioTracks[cat];
+                    for (var caci = caTrack.clips.numItems - 1; caci >= 0; caci--) {
+                        try {
+                            var caClip = caTrack.clips[caci];
+                            if (!caClip) continue;
+                            var cas = _timeToTicksPreferTicks(caClip.start);
+                            var cae = _timeToTicksPreferTicks(caClip.end);
+                            var caInside = _clipFullyInsideTicks(cas, cae, zoneStartTicks, zoneEndTicks, fps);
+                            _pushCandidate(zoneDiag, "audio", cat, caci, _ticksToSeconds(cas), _ticksToSeconds(cae), caInside);
+                            if (caInside) {
+                                targets.audio.push(caClip);
+                                targets.total++;
+                            }
+                        } catch (eCA) { if (zoneDiag) diag.push("A collect fail t=" + cat + " c=" + caci + ": " + eCA.toString()); }
+                    }
+                }
+            } catch (eCAAll) {}
+            return targets;
+        }
+
+        function _removeCollectedTargets(targets, zoneDiag) {
+            var allTargets = [];
+            for (var rv = 0; rv < targets.video.length; rv++) allTargets.push({ kind: "video", clip: targets.video[rv] });
+            for (var ra = 0; ra < targets.audio.length; ra++) allTargets.push({ kind: "audio", clip: targets.audio[ra] });
+
+            for (var ri = 0; ri < allTargets.length; ri++) {
+                try {
+                    var ripple = (ri === allTargets.length - 1);
+                    allTargets[ri].clip.remove(ripple, true);
+                    if (allTargets[ri].kind === "video") zoneDiag.removedVideo++;
+                    else zoneDiag.removedAudio++;
+                } catch (eRemoveCollected) {
+                    diag.push("remove collected " + allTargets[ri].kind + " failed: " + eRemoveCollected.toString());
+                }
+            }
+        }
+
+        function _waitForRazorRefresh(beforeCounts) {
+            var refreshedSeq = seq;
+            var counts = beforeCounts;
+            var attempts = 0;
+            for (var wr = 0; wr < 10; wr++) {
+                attempts++;
+                try { $.sleep(40); } catch(eSleep) {}
+                try { refreshedSeq = app.project.activeSequence; } catch(eResync) {}
+                counts = _countTimelineClips(refreshedSeq);
+                if (counts.total > beforeCounts.total) break;
+            }
+            return { sequence: refreshedSeq, counts: counts, refreshAttempts: attempts };
+        }
+
+        function _waitForContainedTargets(zoneStartTicks, zoneEndTicks, zoneDiag) {
+            var targetSeq = seq;
+            var targetCounts = _countTimelineClips(targetSeq);
+            var targets = { video: [], audio: [], total: 0 };
+            var attempts = 0;
+            for (var wt = 0; wt < 12; wt++) {
+                attempts++;
+                try { targetSeq = app.project.activeSequence; } catch(eTargetResync) {}
+                targetCounts = _countTimelineClips(targetSeq);
+                targets = _collectZoneContainedClipTargets(targetSeq, zoneStartTicks, zoneEndTicks, null);
+                if (targets.total > 0) break;
+                try { $.sleep(60); } catch(eTargetSleep) {}
+            }
+            zoneDiag.targetRefreshAttempts = attempts;
+            targets = _collectZoneContainedClipTargets(targetSeq, zoneStartTicks, zoneEndTicks, zoneDiag);
+            return { sequence: targetSeq, counts: targetCounts, targets: targets, targetRefreshAttempts: attempts };
+        }
+
         var rangeStartTicks = null;
         var rangeEndTicks = null;
         if (opts.range) {
@@ -943,10 +1084,19 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                 endTC: endTC,
                 clipsBefore: _countTimelineClips(seq),
                 clipsAfterRazor: null,
+                refreshAttempts: 0,
                 removedVideo: 0,
                 removedAudio: 0,
                 candidateClips: []
             };
+
+            var preflightTargets = _collectZoneIntersectingClips(seq, zStartTicks, zEndTicks, zoneDiag);
+            zoneDiag.preflightTargets = preflightTargets;
+            if (preflightTargets.total === 0) {
+                skipped++;
+                zoneDiagnostics.push(zoneDiag);
+                continue;
+            }
 
             try {
                 for (var v = 0; v < qeSeq.numVideoTracks; v++) {
@@ -969,53 +1119,37 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
 
             // Resync regular API after QE DOM razor — without this, clips[vci].start
             // may still reflect pre-razor geometry and _clipFullyInside never matches.
-            try { $.sleep(50); } catch(eSleep) {}
-            try { seq = app.project.activeSequence; } catch(eResync) {}
-            zoneDiag.clipsAfterRazor = _countTimelineClips(seq);
+            var refreshResult = _waitForRazorRefresh(zoneDiag.clipsBefore);
+            seq = refreshResult.sequence;
+            zoneDiag.refreshAttempts = refreshResult.refreshAttempts;
+            zoneDiag.clipsAfterRazor = refreshResult.counts;
 
             try {
-                for (var vt = 0; vt < seq.videoTracks.numTracks; vt++) {
-                    if (_isApplyCutsCancelled()) return _cancelledResult();
-                    var vTrack = seq.videoTracks[vt];
-                    for (var vci = vTrack.clips.numItems - 1; vci >= 0; vci--) {
-                        if (_isApplyCutsCancelled()) return _cancelledResult();
-                        try {
-                            var vClip = vTrack.clips[vci];
-                            if (!vClip) continue;
-                            var csTicks = 0, ceTicks = 0;
-                            csTicks = _timeToTicksPreferTicks(vClip.start);
-                            ceTicks = _timeToTicksPreferTicks(vClip.end);
-                            var vInside = _clipFullyInsideTicks(csTicks, ceTicks, zStartTicks, zEndTicks, fps);
-                            _pushCandidate(zoneDiag, "video", vt, vci, _ticksToSeconds(csTicks), _ticksToSeconds(ceTicks), vInside);
-                            if (vInside) {
-                                vClip.remove(true, true);
-                                zoneDiag.removedVideo++;
-                            }
-                        } catch (eRem) { diag.push("V remove fail t=" + vt + " c=" + vci + ": " + eRem.toString()); }
-                    }
+                var removeTargets = _collectZoneContainedClipTargets(seq, zStartTicks, zEndTicks, zoneDiag);
+                if (removeTargets.total === 0) {
+                    var targetWait = _waitForContainedTargets(zStartTicks, zEndTicks, zoneDiag);
+                    seq = targetWait.sequence;
+                    zoneDiag.clipsAfterRazor = targetWait.counts;
+                    zoneDiag.targetRefreshAttempts = targetWait.targetRefreshAttempts;
+                    removeTargets = targetWait.targets;
                 }
-                for (var at = 0; at < seq.audioTracks.numTracks; at++) {
-                    if (_isApplyCutsCancelled()) return _cancelledResult();
-                    var aTrack = seq.audioTracks[at];
-                    for (var aci = aTrack.clips.numItems - 1; aci >= 0; aci--) {
-                        if (_isApplyCutsCancelled()) return _cancelledResult();
-                        try {
-                            var aClip = aTrack.clips[aci];
-                            if (!aClip) continue;
-                            var asTicks = 0, aeTicks = 0;
-                            asTicks = _timeToTicksPreferTicks(aClip.start);
-                            aeTicks = _timeToTicksPreferTicks(aClip.end);
-                            var aInside = _clipFullyInsideTicks(asTicks, aeTicks, zStartTicks, zEndTicks, fps);
-                            _pushCandidate(zoneDiag, "audio", at, aci, _ticksToSeconds(asTicks), _ticksToSeconds(aeTicks), aInside);
-                            if (aInside) {
-                                aClip.remove(true, true);
-                                zoneDiag.removedAudio++;
-                            }
-                        } catch (eRem) { diag.push("A remove fail t=" + at + " c=" + aci + ": " + eRem.toString()); }
-                    }
-                }
+                if (_isApplyCutsCancelled()) return _cancelledResult();
+                _removeCollectedTargets(removeTargets, zoneDiag);
                 if (zoneDiag.removedVideo + zoneDiag.removedAudio > 0) applied++;
-                else skipped++;
+                else {
+                    zoneDiag.deleteRequired = true;
+                    zoneDiag.error = "Razor created no removable segment for this zone";
+                    zoneDiagnostics.push(zoneDiag);
+                    return JSON.stringify({
+                        success: false,
+                        deleteRequired: true,
+                        error: "Cut zone was razored but no clip segment was deleted",
+                        applied: applied,
+                        skipped: skipped,
+                        _diag: diag,
+                        _zoneDiag: zoneDiagnostics
+                    });
+                }
                 zoneDiagnostics.push(zoneDiag);
             } catch (eRemAll) {
                 diag.push("remove block zone " + z + " failed: " + eRemAll.toString());

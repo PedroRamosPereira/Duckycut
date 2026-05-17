@@ -205,6 +205,21 @@
         return pad(hh) + ":" + pad(mm) + ":" + pad(ss) + ":" + pad(ff);
     }
 
+    function secondsToQeRazorTimecode(seconds, fps, isDropFrame, isNTSC) {
+        if (!fps || fps <= 0) fps = 30;
+        if (!isDropFrame) return secondsToTimecode(seconds, fps, isNTSC);
+
+        var nominalFps = Math.round(fps);
+        var totalFrames = Math.round(seconds * fps);
+        var ff = totalFrames % nominalFps;
+        var ss = Math.floor(totalFrames / nominalFps) % 60;
+        var mm = Math.floor(totalFrames / (nominalFps * 60)) % 60;
+        var hh = Math.floor(totalFrames / (nominalFps * 3600));
+
+        function pad(n) { return n < 10 ? "0" + n : "" + n; }
+        return pad(hh) + ":" + pad(mm) + ":" + pad(ss) + ";" + pad(ff);
+    }
+
     function offsetIntervals(intervals, offsetSeconds) {
         var offset = Number(offsetSeconds) || 0;
         var out = [];
@@ -239,6 +254,7 @@
         intersectIntervalsWithRange: intersectIntervalsWithRange,
         secondsToTimecode:      secondsToTimecode,
         secondsToDropTimecode:  secondsToDropTimecode,
+        secondsToQeRazorTimecode: secondsToQeRazorTimecode,
         parseZeroPoint:         parseZeroPoint,
         jsxStringArg:           jsxStringArg,
         getProjectPathError:    getProjectPathError,

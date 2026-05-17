@@ -164,6 +164,55 @@ test("host applyCutsInPlace reports per-zone diagnostics for failed removals", (
     assert.match(fn, /"_zoneDiag"/, "applyCutsInPlace should return the per-zone diagnostics payload");
 });
 
+test("host Apply Cuts diagnostics include target order and frame deltas", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function applyCutsInPlace");
+    assert.notEqual(start, -1, "applyCutsInPlace should exist");
+
+    const end = host.indexOf("\nfunction applyCutsInPlaceFile", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /frameDeltaStart/, "zone diagnostics should include start delta in frames for candidates");
+    assert.match(fn, /frameDeltaEnd/, "zone diagnostics should include end delta in frames for candidates");
+    assert.match(fn, /targetOrder/, "zone diagnostics should record target removal order");
+    assert.match(fn, /rippleTargetKind/, "zone diagnostics should record which kind received ripple delete");
+    assert.match(fn, /rippleTargetIndex/, "zone diagnostics should record which target index received ripple delete");
+});
+
+test("panel logs Apply Cuts chunk timing summaries", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function applyCutsInPlaceFromPanel");
+    assert.notEqual(start, -1, "applyCutsInPlaceFromPanel should exist");
+
+    const end = main.indexOf("\n    // â”€â”€ UI Helpers", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /chunkStartedAt/, "panel should capture chunk start time");
+    assert.match(fn, /chunkElapsedMs/, "panel should compute chunk elapsed time");
+    assert.match(fn, /applyCutsInPlace chunk diag/, "panel should log a searchable chunk diagnostic label");
+    assert.match(fn, /zoneCount/, "chunk diagnostics should include zone count");
+});
+
+test("panel persists Apply Cuts diagnostics to a temp log file", () => {
+    const main = readProjectFile("client/js/main.js");
+
+    assert.match(main, /nodeOs\s*=\s*nodeRequire\("os"\)/, "panel should load os module for temp log path");
+    assert.match(main, /function getApplyCutsLogPath\(/, "panel should expose an Apply Cuts log path helper");
+    assert.match(main, /duckycut-apply-cuts\.log/, "log file name should be stable and searchable");
+    assert.match(main, /function writeApplyCutsLog\(/, "panel should have a persistent log writer");
+    assert.match(main, /appendFileSync\(/, "panel should append diagnostics to disk");
+
+    const start = main.indexOf("function applyCutsInPlaceFromPanel");
+    assert.notEqual(start, -1, "applyCutsInPlaceFromPanel should exist");
+    const end = main.indexOf("\n    // â”€â”€ UI Helpers", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /writeApplyCutsLog\("chunk"/, "chunk diagnostics should be persisted");
+    assert.match(fn, /writeApplyCutsLog\("host-diag"/, "host diagnostics should be persisted");
+    assert.match(fn, /writeApplyCutsLog\("zone-diag"/, "zone diagnostics should be persisted");
+    assert.match(fn, /Log:/, "error status should tell the user where the log was written");
+});
+
 test("host target polling can collect contained clips without diagnostics", () => {
     const host = readProjectFile("host/index.jsx");
     const start = host.indexOf("function applyCutsInPlace");
@@ -174,6 +223,42 @@ test("host target polling can collect contained clips without diagnostics", () =
 
     assert.match(fn, /function _pushCandidate\([\s\S]*if \(!zoneDiag\) return/, "_pushCandidate should tolerate null zoneDiag during polling");
     assert.match(fn, /_collectZoneContainedClipTargets\(targetSeq, zoneStartTicks, zoneEndTicks, null\)/, "target polling should be able to collect without logging candidates");
+});
+
+test("host razor refresh waits for contained targets, not just clip count changes", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function applyCutsInPlace");
+    assert.notEqual(start, -1, "applyCutsInPlace should exist");
+
+    const end = host.indexOf("\nfunction applyCutsInPlaceFile", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+    const refreshStart = fn.indexOf("function _waitForRazorRefresh");
+    assert.notEqual(refreshStart, -1, "_waitForRazorRefresh should exist");
+    const refreshEnd = fn.indexOf("\n        function _waitForContainedTargets", refreshStart + 1);
+    const refreshFn = fn.slice(refreshStart, refreshEnd === -1 ? fn.length : refreshEnd);
+
+    assert.match(refreshFn, /zoneStartTicks/, "razor refresh should receive zone start ticks");
+    assert.match(refreshFn, /zoneEndTicks/, "razor refresh should receive zone end ticks");
+    assert.match(refreshFn, /_collectZoneContainedClipTargets\(/, "razor refresh should poll for removable contained targets");
+    assert.doesNotMatch(refreshFn, /counts\.total\s*>\s*beforeCounts\.total\)\s*break/, "clip count change alone should not mark the DOM ready");
+});
+
+test("host reacquires QE sequence per zone and records razor attempts", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function applyCutsInPlace");
+    assert.notEqual(start, -1, "applyCutsInPlace should exist");
+
+    const end = host.indexOf("\nfunction applyCutsInPlaceFile", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+    const loopStart = fn.indexOf("for (var z = 0; z < zones.length; z++)");
+    assert.notEqual(loopStart, -1, "applyCutsInPlace should loop over zones");
+    const loopFn = fn.slice(loopStart);
+
+    assert.match(loopFn, /qe\.project\.getActiveSequence\(\)/, "host should reacquire QE active sequence inside the zone loop");
+    assert.match(fn, /razorAttempts/, "zone diagnostics should count razor attempts");
+    assert.match(fn, /razorErrors/, "zone diagnostics should capture per-track razor failures");
+    assert.match(fn, /qeVideoTracks/, "zone diagnostics should record QE video track count");
+    assert.match(fn, /qeAudioTracks/, "zone diagnostics should record QE audio track count");
 });
 
 test("host target polling suppresses transient collect errors while diagnostics are disabled", () => {
@@ -365,6 +450,20 @@ test("host applyCutsInPlace normalizes zones to ticks before razor and remove", 
     assert.match(fn, /endTicks/, "host should read endTicks from zone payload");
     assert.match(fn, /_ticksToTimecode\(/, "host should convert ticks to timecode only for razor");
     assert.match(fn, /_clipFullyInsideTicks\(/, "host should compare clip bounds against zone ticks");
+});
+
+test("host uses QE-specific timecode for drop-frame razor calls", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function applyCutsInPlace");
+    assert.notEqual(start, -1, "applyCutsInPlace should exist");
+
+    const end = host.indexOf("\nfunction applyCutsInPlaceFile", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /_secondsToQeRazorTimecodeHost/, "host should have a QE-specific razor timecode helper");
+    assert.match(fn, /displayStartTC/, "zone diagnostics should keep display drop-frame timecode separate from QE razor timecode");
+    assert.match(fn, /displayEndTC/, "zone diagnostics should keep display drop-frame timecode separate from QE razor timecode");
+    assert.match(fn, /_zoneToDisplayTC/, "host diagnostics should still expose display timecode");
 });
 
 test("host applyCutsInPlace filters opts.range using tick bounds", () => {

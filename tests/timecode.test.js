@@ -1,6 +1,6 @@
 const test   = require("node:test");
 const assert = require("node:assert/strict");
-const { secondsToTimecode, secondsToDropTimecode } = require("../client/js/cutZones.js");
+const { secondsToTimecode, secondsToDropTimecode, secondsToQeRazorTimecode } = require("../client/js/cutZones.js");
 
 test("NDF NTSC 29.97: 60s -> 00:00:59:28 (timecode trails wall clock)", () => {
     // round(60 * 30000/1001) = round(1798.20) = 1798 frames
@@ -44,4 +44,10 @@ test("DF 59.94 60fps: 60s real -> 00:00:59;56 (frame 3596 inside minute 0)", () 
 
 test("DF 59.94 60fps: ~60.06s real -> 00:01:00;04 (4 frames dropped at minute 1)", () => {
     assert.equal(secondsToDropTimecode(3600 / 59.94, 59.94), "00:01:00;04");
+});
+
+test("QE razor timecode for 59.94 DF uses absolute frame labels from real log", () => {
+    assert.equal(secondsToDropTimecode(1761.97688333333, 59.94), "00:29:22;01");
+    assert.equal(secondsToQeRazorTimecode(1761.97688333333, 59.94, true, true), "00:29:20;13");
+    assert.equal(secondsToQeRazorTimecode(1769.18408333333, 59.94, true, true), "00:29:27;25");
 });

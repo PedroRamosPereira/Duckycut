@@ -22,6 +22,7 @@
     let modulesError    = "";
     let nodeFs          = null;
     let nodePath        = null;
+    let nodeOs          = null;
 
     // ── Load Node.js modules ─────────────────────────────────────
     try {
@@ -35,6 +36,7 @@
         try {
             nodePath = nodeRequire("path");
             nodeFs   = nodeRequire("fs");
+            nodeOs   = nodeRequire("os");
             var serverDir = null;
 
             if (typeof __dirname !== "undefined" && __dirname) {
@@ -124,6 +126,29 @@
     function getSelectedRangeMode() {
         var selected = document.querySelector('input[name="rangeMode"]:checked');
         return selected ? selected.value : "full";
+    }
+
+    function getApplyCutsLogPath() {
+        if (!nodePath || !nodeOs) return "";
+        return nodePath.join(nodeOs.tmpdir(), "duckycut-apply-cuts.log");
+    }
+
+    function writeApplyCutsLog(label, payload) {
+        if (!nodeFs || !nodePath || !nodeOs) return "";
+        var logPath = getApplyCutsLogPath();
+        if (!logPath) return "";
+        try {
+            var entry = {
+                at: new Date().toISOString(),
+                label: label,
+                payload: payload
+            };
+            nodeFs.appendFileSync(logPath, JSON.stringify(entry) + "\n", "utf8");
+            return logPath;
+        } catch (e) {
+            try { console.log("[Duckycut] applyCutsInPlace log write failed:", e.message || e); } catch (ignore) {}
+            return "";
+        }
     }
 
     // ── Init ─────────────────────────────────────────────────────
@@ -867,12 +892,22 @@
                 "Razoring chunk " + (index + 1) + " of " + cutChunks.length + "..."
             );
 
+            const chunkStartedAt = Date.now();
             evalScript("applyCutsInPlace(" + jsxStringArg(JSON.stringify(cutChunks[index])) + ", " + optsArg + ")")
                 .then(function (raw) {
+                    const chunkElapsedMs = Date.now() - chunkStartedAt;
                     var data = null;
+                    var logPath = "";
                     try { data = JSON.parse(raw); }
                     catch (e) {
-                        setStatus("Cut parse error: " + e.message + " :: raw=" + raw, "error");
+                        logPath = writeApplyCutsLog("parse-error", {
+                            chunkIndex: index,
+                            chunkCount: cutChunks.length,
+                            zoneCount: cutChunks[index].length,
+                            raw: raw,
+                            error: e.message
+                        });
+                        setStatus("Cut parse error: " + e.message + " :: raw=" + raw + (logPath ? " | Log: " + logPath : ""), "error");
                         hideProgress(); endApplyCancelMode();
                         return;
                     }
@@ -881,10 +916,26 @@
                         finishCancelled(appliedCount + (data.applied || 0));
                         return;
                     }
-                    if (data._diag) console.log("[Duckycut] applyCutsInPlace diag:", data._diag);
-                    if (data._zoneDiag) console.log("[Duckycut] applyCutsInPlace zone diag:", data._zoneDiag);
+                    var chunkDiag = {
+                        chunkIndex: index,
+                        chunkCount: cutChunks.length,
+                        zoneCount: cutChunks[index].length,
+                        chunkElapsedMs: chunkElapsedMs,
+                        applied: data.applied || 0,
+                        skipped: data.skipped || 0
+                    };
+                    console.log("[Duckycut] applyCutsInPlace chunk diag:", chunkDiag);
+                    logPath = writeApplyCutsLog("chunk", chunkDiag) || logPath;
+                    if (data._diag) {
+                        console.log("[Duckycut] applyCutsInPlace diag:", data._diag);
+                        logPath = writeApplyCutsLog("host-diag", data._diag) || logPath;
+                    }
+                    if (data._zoneDiag) {
+                        console.log("[Duckycut] applyCutsInPlace zone diag:", data._zoneDiag);
+                        logPath = writeApplyCutsLog("zone-diag", data._zoneDiag) || logPath;
+                    }
                     if (!data.success) {
-                        setStatus("Cut error: " + (data.error || "unknown"), "error");
+                        setStatus("Cut error: " + (data.error || "unknown") + (logPath ? " | Log: " + logPath : ""), "error");
                         hideProgress(); endApplyCancelMode();
                         return;
                     }
@@ -894,7 +945,13 @@
                     }, 0);
                 })
                 .catch(function (err) {
-                    setStatus("Cut error: " + (err.message || "unknown"), "error");
+                    var logPath = writeApplyCutsLog("eval-error", {
+                        chunkIndex: index,
+                        chunkCount: cutChunks.length,
+                        zoneCount: cutChunks[index].length,
+                        error: err && err.message ? err.message : "unknown"
+                    });
+                    setStatus("Cut error: " + (err.message || "unknown") + (logPath ? " | Log: " + logPath : ""), "error");
                     hideProgress(); endApplyCancelMode();
                 });
         }

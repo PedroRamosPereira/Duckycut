@@ -122,6 +122,22 @@ function _secondsToDropTimecodeHost(seconds, fps) {
     return pad(hh) + ":" + pad(mm) + ":" + pad(ss) + ";" + pad(ff);
 }
 
+// QE razor() on drop-frame timelines is most reliable with absolute frame
+// labels, while diagnostics can still show normal display drop-frame labels.
+function _secondsToQeRazorTimecodeHost(seconds, fps, isDropFrame, isNTSC) {
+    if (!fps || fps <= 0) fps = 30;
+    if (!isDropFrame) return _secondsToTimecodeHost(seconds, fps, isNTSC);
+
+    var nominalFps = Math.round(fps);
+    var totalFrames = Math.round(seconds * fps);
+    var ff = totalFrames % nominalFps;
+    var ss = Math.floor(totalFrames / nominalFps) % 60;
+    var mm = Math.floor(totalFrames / (nominalFps * 60)) % 60;
+    var hh = Math.floor(totalFrames / (nominalFps * 3600));
+    function pad(n) { return n < 10 ? "0" + n : "" + n; }
+    return pad(hh) + ":" + pad(mm) + ":" + pad(ss) + ";" + pad(ff);
+}
+
 function _clipFullyInside(clipStartSec, clipEndSec, zoneStartSec, zoneEndSec, fps) {
     // 1.5 frames covers NTSC tick-to-seconds drift (up to ~1 frame off)
     // without false-positives: keep-zone clips are much longer than 3 frames.
@@ -787,9 +803,9 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         var diag = [];
         var zoneDiagnostics = [];
 
-        // razor() uses display timecode (relative to seq.zeroPoint).
-        // If the sequence doesn't start at 00:00:00:00, add the offset so
-        // the cut lands on the correct frame.
+        // razor() receives sequence timecode relative to seq.zeroPoint.
+        // Drop-frame display labels are kept separately for diagnostics because
+        // QE razor() cuts on absolute frame labels in long DF timelines.
         // _parseZeroPoint handles string ticks, number ticks, and PPro 14+ Time
         // objects (where Number(timeObj) returns NaN — the prior bug).
         var zpRaw  = null;
@@ -802,6 +818,10 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         } catch (eZP) {}
 
         function _zoneToTC(secs) {
+            return _secondsToQeRazorTimecodeHost(secs + zpSec, fps, isDropFrame, isNTSC);
+        }
+
+        function _zoneToDisplayTC(secs) {
             if (isDropFrame) return _secondsToDropTimecodeHost(secs + zpSec, fps);
             return _secondsToTimecodeHost(secs + zpSec, fps, isNTSC);
         }
@@ -831,12 +851,15 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
             var tol = (fps && fps > 0) ? (3 / fps) : 0.1;
             var intersects = (endSec >= zoneDiag.zStart - tol) && (startSec <= zoneDiag.zEnd + tol);
             if (!inside && !intersects) return;
+            var frameRate = (fps && fps > 0) ? fps : 30;
             zoneDiag.candidateClips.push({
                 kind: kind,
                 trackIndex: trackIndex,
                 clipIndex: clipIndex,
                 start: startSec,
                 end: endSec,
+                frameDeltaStart: (startSec - zoneDiag.zStart) * frameRate,
+                frameDeltaEnd: (endSec - zoneDiag.zEnd) * frameRate,
                 inside: inside
             });
         }
@@ -864,6 +887,10 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
 
         function _ticksToTimecode(ticks) {
             return _zoneToTC(_ticksToSeconds(ticks));
+        }
+
+        function _ticksToDisplayTimecode(ticks) {
+            return _zoneToDisplayTC(_ticksToSeconds(ticks));
         }
 
         function _normalizeCutZone(zone) {
@@ -999,6 +1026,15 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                 try {
                     var ripple = (ri === allTargets.length - 1);
                     allTargets[ri].clip.remove(ripple, true);
+                    zoneDiag.targetOrder.push({
+                        kind: allTargets[ri].kind,
+                        targetIndex: ri,
+                        ripple: ripple
+                    });
+                    if (ripple) {
+                        zoneDiag.rippleTargetKind = allTargets[ri].kind;
+                        zoneDiag.rippleTargetIndex = ri;
+                    }
                     if (allTargets[ri].kind === "video") zoneDiag.removedVideo++;
                     else zoneDiag.removedAudio++;
                 } catch (eRemoveCollected) {
@@ -1007,18 +1043,21 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
             }
         }
 
-        function _waitForRazorRefresh(beforeCounts) {
+        function _waitForRazorRefresh(beforeCounts, zoneStartTicks, zoneEndTicks, zoneDiag) {
             var refreshedSeq = seq;
             var counts = beforeCounts;
             var attempts = 0;
+            var targets = { video: [], audio: [], total: 0 };
             for (var wr = 0; wr < 10; wr++) {
                 attempts++;
                 try { $.sleep(40); } catch(eSleep) {}
                 try { refreshedSeq = app.project.activeSequence; } catch(eResync) {}
                 counts = _countTimelineClips(refreshedSeq);
-                if (counts.total > beforeCounts.total) break;
+                targets = _collectZoneContainedClipTargets(refreshedSeq, zoneStartTicks, zoneEndTicks, null);
+                if (targets.total > 0) break;
             }
-            return { sequence: refreshedSeq, counts: counts, refreshAttempts: attempts };
+            if (zoneDiag) zoneDiag.razorRefreshFoundTargets = targets.total;
+            return { sequence: refreshedSeq, counts: counts, refreshAttempts: attempts, targets: targets };
         }
 
         function _waitForContainedTargets(zoneStartTicks, zoneEndTicks, zoneDiag) {
@@ -1074,6 +1113,8 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
 
             var startTC = _ticksToTimecode(zStartTicks);
             var endTC   = _ticksToTimecode(zEndTicks);
+            var displayStartTC = _ticksToDisplayTimecode(zStartTicks);
+            var displayEndTC   = _ticksToDisplayTimecode(zEndTicks);
             var zoneDiag = {
                 zoneIndex: z,
                 zStart: zStart,
@@ -1082,11 +1123,20 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                 zEndTicks: String(zEndTicks),
                 startTC: startTC,
                 endTC: endTC,
+                displayStartTC: displayStartTC,
+                displayEndTC: displayEndTC,
                 clipsBefore: _countTimelineClips(seq),
                 clipsAfterRazor: null,
                 refreshAttempts: 0,
                 removedVideo: 0,
                 removedAudio: 0,
+                targetOrder: [],
+                rippleTargetKind: "",
+                rippleTargetIndex: -1,
+                razorAttempts: 0,
+                razorErrors: [],
+                qeVideoTracks: 0,
+                qeAudioTracks: 0,
                 candidateClips: []
             };
 
@@ -1099,13 +1149,44 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
             }
 
             try {
+                try { qeSeq = qe.project.getActiveSequence(); } catch (eQeRefresh) {
+                    zoneDiag.razorErrors.push("QE refresh failed: " + eQeRefresh.toString());
+                }
+                if (!qeSeq) {
+                    zoneDiag.razorError = "QE active sequence not found during zone";
+                    zoneDiagnostics.push(zoneDiag);
+                    skipped++;
+                    continue;
+                }
+                zoneDiag.qeVideoTracks = qeSeq.numVideoTracks;
+                zoneDiag.qeAudioTracks = qeSeq.numAudioTracks;
                 for (var v = 0; v < qeSeq.numVideoTracks; v++) {
-                    try { qeSeq.getVideoTrackAt(v).razor(endTC); }   catch (e1) {}
-                    try { qeSeq.getVideoTrackAt(v).razor(startTC); } catch (e2) {}
+                    try {
+                        zoneDiag.razorAttempts++;
+                        qeSeq.getVideoTrackAt(v).razor(endTC);
+                    } catch (e1) {
+                        zoneDiag.razorErrors.push("V" + v + " end: " + e1.toString());
+                    }
+                    try {
+                        zoneDiag.razorAttempts++;
+                        qeSeq.getVideoTrackAt(v).razor(startTC);
+                    } catch (e2) {
+                        zoneDiag.razorErrors.push("V" + v + " start: " + e2.toString());
+                    }
                 }
                 for (var a = 0; a < qeSeq.numAudioTracks; a++) {
-                    try { qeSeq.getAudioTrackAt(a).razor(endTC); }   catch (e3) {}
-                    try { qeSeq.getAudioTrackAt(a).razor(startTC); } catch (e4) {}
+                    try {
+                        zoneDiag.razorAttempts++;
+                        qeSeq.getAudioTrackAt(a).razor(endTC);
+                    } catch (e3) {
+                        zoneDiag.razorErrors.push("A" + a + " end: " + e3.toString());
+                    }
+                    try {
+                        zoneDiag.razorAttempts++;
+                        qeSeq.getAudioTrackAt(a).razor(startTC);
+                    } catch (e4) {
+                        zoneDiag.razorErrors.push("A" + a + " start: " + e4.toString());
+                    }
                 }
             } catch (eRazor) {
                 diag.push("razor zone " + z + " failed: " + eRazor.toString());
@@ -1119,7 +1200,7 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
 
             // Resync regular API after QE DOM razor — without this, clips[vci].start
             // may still reflect pre-razor geometry and _clipFullyInside never matches.
-            var refreshResult = _waitForRazorRefresh(zoneDiag.clipsBefore);
+            var refreshResult = _waitForRazorRefresh(zoneDiag.clipsBefore, zStartTicks, zEndTicks, zoneDiag);
             seq = refreshResult.sequence;
             zoneDiag.refreshAttempts = refreshResult.refreshAttempts;
             zoneDiag.clipsAfterRazor = refreshResult.counts;
@@ -1170,7 +1251,9 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
             var lastZone  = _normalizeCutZone(zones[0]);
             diag.push("firstZoneSec=[" + firstZone.startSeconds + "," + firstZone.endSeconds + "]");
             diag.push("firstZoneTC=[" + _ticksToTimecode(firstZone.startTicks) + "," + _ticksToTimecode(firstZone.endTicks) + "]");
+            diag.push("firstZoneDisplayTC=[" + _ticksToDisplayTimecode(firstZone.startTicks) + "," + _ticksToDisplayTimecode(firstZone.endTicks) + "]");
             diag.push("lastZoneTC=["  + _ticksToTimecode(lastZone.startTicks)  + "," + _ticksToTimecode(lastZone.endTicks)  + "]");
+            diag.push("lastZoneDisplayTC=["  + _ticksToDisplayTimecode(lastZone.startTicks)  + "," + _ticksToDisplayTimecode(lastZone.endTicks)  + "]");
         }
 
         var result = '{"success":true,"applied":' + applied + ',"skipped":' + skipped;

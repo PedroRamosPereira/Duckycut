@@ -21,11 +21,11 @@ test("host exportSequenceAudio exports directly from Premiere, not through AME",
     assert.doesNotMatch(fn, /app\.encoder\.|encodeSequence\(/, "exportSequenceAudio should not depend on AME encoder APIs");
 });
 
-test("panel analysis copy describes selected-track FFmpeg detection instead of Premiere direct export", () => {
+test("panel analysis copy describes Premiere-rendered selected-track detection", () => {
     const main = readProjectFile("client/js/main.js");
 
     assert.doesNotMatch(main, /Adobe Media Encoder|AME didn't produce|AME render/i);
-    assert.match(main, /selected tracks/i);
+    assert.match(main, /Premiere audio mix|Premiere render|selected tracks/i);
 });
 
 test("host muteAudioTracks makes selected tracks audible and others muted", () => {
@@ -36,11 +36,13 @@ test("host muteAudioTracks makes selected tracks audible and others muted", () =
     const end = host.indexOf("\nfunction restoreAudioTrackMutes", start + 1);
     const fn = host.slice(start, end === -1 ? host.length : end);
 
-    assert.match(fn, /track\.setMute\(false\)/, "selected tracks should be unmuted during export");
-    assert.match(fn, /track\.setMute\(true\)/, "unselected tracks should be muted during export");
+    assert.match(fn, /muteValue:\s*isSelected\s*\?\s*0\s*:\s*1/, "selected/unselected tracks should map to Premiere's numeric mute API");
+    assert.match(fn, /\.setMute\(plan\.muteValue\)/, "host should pass numeric mute values to Premiere");
+    assert.match(fn, /afterMuted\s*=\s*plannedTrack\.isMuted\(\)/, "host should verify the mute state after setting it");
+    assert.match(fn, /Mute verification failed/, "host should fail before export if Premiere refuses the requested mute state");
 });
 
-test("panel analysis filters sequence clips by selected audio tracks before detecting silence", () => {
+test("panel Analyze renders the selected Premiere mix before detecting silence", () => {
     const main = readProjectFile("client/js/main.js");
     const start = main.indexOf("function runAnalysis");
     assert.notEqual(start, -1, "runAnalysis should exist");
@@ -48,10 +50,9 @@ test("panel analysis filters sequence clips by selected audio tracks before dete
     const end = main.indexOf("\n    //", start + 1);
     const fn = main.slice(start, end === -1 ? main.length : end);
 
-    assert.match(fn, /buildSelectedAudioTracksForDetection\(/, "runAnalysis should build a detection payload from selected checkboxes");
-    assert.match(fn, /detectSilenceFromSequence\(/, "runAnalysis should run FFmpeg only on selected track clips");
-    assert.doesNotMatch(fn, /ensureSelectedTrackMixdown\(/, "runAnalysis should not rely on Premiere mute state to filter tracks");
-    assert.doesNotMatch(fn, /detectSilence\(/, "runAnalysis should not analyze a Premiere-rendered WAV containing unselected tracks");
+    assert.match(fn, /ensureSelectedTrackMixdown\(selectedIdx,\s*analysisRangeInfo\)/, "Analyze should render the selected Premiere mix before silence detection");
+    assert.match(fn, /detectSilence\(renderedMixPath/, "Analyze should run silencedetect on the rendered Premiere WAV");
+    assert.doesNotMatch(fn, /detectSilenceFromSequence\(selectedAudioTracks/, "Analyze should not use FFmpeg sequence mix as the primary path");
 });
 
 test("panel maps selected sequence clips into range-relative audio tracks", () => {
@@ -70,20 +71,40 @@ test("panel maps selected sequence clips into range-relative audio tracks", () =
     assert.match(fn, /srcIn:\s*clip\.mediaIn\s*\+\s*\(overlapStart\s*-\s*clipStart\)/, "source in should follow the clipped overlap");
 });
 
-test("panel does not rely on Premiere mute state to filter selected tracks", () => {
+test("panel helper restores Premiere track mutes after selected mix render", () => {
     const main = readProjectFile("client/js/main.js");
-    const start = main.indexOf("function runAnalysis");
-    assert.notEqual(start, -1, "runAnalysis should exist");
+    const start = main.indexOf("function ensureSelectedTrackMixdown");
+    assert.notEqual(start, -1, "ensureSelectedTrackMixdown should exist");
 
-    const end = main.indexOf("\n    // ═", start + 1);
+    const end = main.indexOf("\n    function runAnalysis", start + 1);
     const fn = main.slice(start, end === -1 ? main.length : end);
 
-    assert.doesNotMatch(fn, /muteAudioTracks\(/, "Analyze should not use track mute state as the selection filter");
-    assert.doesNotMatch(fn, /exportSequenceAudio\(/, "Analyze should not use Premiere direct export for selected-track filtering");
-    assert.match(fn, /buildSelectedAudioTracksForDetection\(/, "Analyze should filter collected clips by checkbox selection");
+    assert.match(fn, /muteAudioTracks\(/, "helper should normalize Premiere track mutes before export");
+    assert.match(fn, /muteResult\.diagnostics/, "helper should surface Premiere mute diagnostics");
+    assert.match(fn, /savedMuteStates\s*=\s*muteResult\.savedStates/, "helper should keep the original Premiere mute states returned by the host");
+    assert.match(fn, /restoreAudioTrackMutes\(" \+ jsxStringArg\(JSON\.stringify\(savedMuteStates\)/, "helper should pass saved mute states back to the host when restoring");
+    assert.match(fn, /restoreResult\.success/, "helper should reject if the host reports mute restoration failure");
+    assert.match(fn, /exportSequenceAudio\(/, "helper should export WAV through Premiere");
+    assert.match(fn, /restoreAudioTrackMutes\(/, "helper should restore mutes after export");
+    assert.match(fn, /function restore\(|\.finally\(/, "mute restoration must happen after success and failure paths");
+    assert.match(fn, /workAreaType/, "helper should pass Full Sequence or In-Out export mode");
 });
 
-test("panel Auto Detect probes first selected track source without prerender", () => {
+test("host restoreAudioTrackMutes restores saved states with Premiere numeric mute API", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function restoreAudioTrackMutes");
+    assert.notEqual(start, -1, "restoreAudioTrackMutes should exist");
+
+    const end = host.indexOf("\nfunction ", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /restoreValue\s*=\s*state\.wasMuted\s*\?\s*1\s*:\s*0/, "restore should map saved booleans to Premiere's numeric mute API");
+    assert.match(fn, /track\.setMute\(restoreValue\)/, "restore should pass numeric mute values to Premiere");
+    assert.match(fn, /afterMuted\s*=\s*track\.isMuted\(\)/, "restore should verify the mute state after restoring it");
+    assert.match(fn, /Mute restore verification failed/, "restore should report when Premiere refuses the original state");
+});
+
+test("panel Auto Detect probes the selected-track mix instead of only the first selected track", () => {
     const main = readProjectFile("client/js/main.js");
     const start = main.indexOf("function runProbe");
     assert.notEqual(start, -1, "runProbe should exist");
@@ -91,10 +112,11 @@ test("panel Auto Detect probes first selected track source without prerender", (
     const end = main.indexOf("\n    // ── Run Analysis", start + 1);
     const fn = main.slice(start, end === -1 ? main.length : end);
 
-    assert.match(fn, /getAudioTrackMediaPath\(/, "runProbe should get a source path from the first selected track");
-    assert.match(fn, /probeAudio\(mediaPath\)/, "runProbe should probe the source path directly");
-    assert.doesNotMatch(fn, /ensureSelectedTrackMixdown\(/, "runProbe should not prerender just to check speech level");
-    assert.doesNotMatch(fn, /exportSequenceAudio\(/, "runProbe should not export audio just to check speech level");
+    assert.match(fn, /getFullSequenceClips\(/, "runProbe should read sequence clips for all selected tracks");
+    assert.match(fn, /buildSelectedAudioTracksForDetection\(selectedForProbe/, "runProbe should reuse selected-track filtering");
+    assert.match(fn, /probeAudioFromSequence\(/, "runProbe should probe a mix built from all selected tracks");
+    assert.doesNotMatch(fn, /getAudioTrackMediaPath\(/, "runProbe should not collapse calibration to the first selected track");
+    assert.doesNotMatch(fn, /selectedForProbe\[0\]/, "runProbe should not index only the first selected track");
 });
 
 test("host applyCutsInPlace removes clips using ticks instead of Premiere seconds floats", () => {
@@ -384,7 +406,7 @@ test("panel exposes Full Sequence / In-Out range toggle", () => {
     assert.match(main, /getSelectedRangeMode\(/, "panel should read selected range mode");
 });
 
-test("panel Analyze validates In-Out range, clips selected tracks, and offsets detected silence", () => {
+test("panel Analyze validates In-Out range, renders that range, and offsets detected silence", () => {
     const main = readProjectFile("client/js/main.js");
     const start = main.indexOf("function runAnalysis");
     assert.notEqual(start, -1, "runAnalysis should exist");
@@ -395,11 +417,12 @@ test("panel Analyze validates In-Out range, clips selected tracks, and offsets d
     assert.match(fn, /getSelectedRangeMode\(/, "Analyze should read selected range mode");
     assert.match(fn, /getSequenceInOutRange\(/, "Analyze should request In-Out range from host");
     assert.match(fn, /Define In and Out|set In and Out/i, "invalid In-Out should fail clearly");
-    assert.match(fn, /buildSelectedAudioTracksForDetection\(selectedIdx, sequenceClips, analysisRangeInfo\)/, "Analyze should clip selected tracks to the active range");
+    assert.match(fn, /ensureSelectedTrackMixdown\(selectedIdx,\s*analysisRangeInfo\)/, "Analyze should render selected Premiere tracks for the active range");
+    assert.match(fn, /workAreaType\s*=\s*1/, "In-Out Analyze should export with workAreaType=1");
     assert.match(fn, /offsetIntervals\(/, "Analyze should offset FFmpeg intervals into sequence time");
 });
 
-test("panel Analyze uses sequence duration after selected-track FFmpeg detection", () => {
+test("panel Analyze uses sequence duration after Premiere-rendered detection", () => {
     const main = readProjectFile("client/js/main.js");
     const start = main.indexOf("function runAnalysis");
     assert.notEqual(start, -1, "runAnalysis should exist");

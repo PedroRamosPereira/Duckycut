@@ -422,7 +422,7 @@
 
     // ── Auto Detect Volume ────────────────────────────────────────
     function runProbe() {
-        if (!silenceDetector || !silenceDetector.probeAudio) {
+        if (!silenceDetector || !silenceDetector.probeAudioFromSequence) {
             setStatus("probeAudio not available", "error"); return;
         }
         if (!sequenceInfo) {
@@ -440,17 +440,19 @@
             elBtnProbe.textContent = "Auto Detect";
             return;
         }
-        evalScript("getAudioTrackMediaPath(" + selectedForProbe[0] + ")").then(function(r) {
-            var mediaPath = null;
-            try { mediaPath = JSON.parse(r).path || null; } catch(e) {}
-            if (!mediaPath) {
-                setStatus("No media found in track", "error");
+        evalScript("getFullSequenceClips()").then(function(r) {
+            var clips = null;
+            try { clips = JSON.parse(r); } catch(e) { clips = null; }
+
+            var selectedAudioTracks = buildSelectedAudioTracksForDetection(selectedForProbe, clips, null);
+            if (selectedAudioTracks.length === 0) {
+                setStatus("No audio clips found in selected tracks", "error");
                 elBtnProbe.disabled = false;
                 elBtnProbe.textContent = "Auto Detect";
                 return;
             }
 
-            silenceDetector.probeAudio(mediaPath)
+            silenceDetector.probeAudioFromSequence(selectedAudioTracks)
                 .then((result) => {
                     probeResult = result;
                     elVolumeIdle.style.display  = "none";
@@ -517,9 +519,124 @@
         return out;
     }
 
+    function waitForStableFile(filePath, onProgress) {
+        return new Promise(function(resolve, reject) {
+            var startedAt = Date.now();
+            var timeoutMs = 180000;
+            var stableNeeded = 4;
+            var stableCount = 0;
+            var lastSize = -1;
+
+            function tick() {
+                try {
+                    if (!nodeFs.existsSync(filePath)) {
+                        if (Date.now() - startedAt > timeoutMs) {
+                            reject(new Error("Timeout waiting for Premiere render output"));
+                            return;
+                        }
+                        setTimeout(tick, 300);
+                        return;
+                    }
+
+                    var stat = nodeFs.statSync(filePath);
+                    if (onProgress) onProgress(stat.size);
+                    if (stat.size > 0 && stat.size === lastSize) stableCount++;
+                    else stableCount = 0;
+                    lastSize = stat.size;
+
+                    if (stableCount >= stableNeeded) {
+                        resolve(filePath);
+                        return;
+                    }
+                } catch (e) {
+                    reject(e);
+                    return;
+                }
+                setTimeout(tick, 300);
+            }
+            tick();
+        });
+    }
+
+    function ensureSelectedTrackMixdown(selectedIdx, rangeInfo) {
+        if (!nodeRequire || !nodeFs || !nodePath) {
+            return Promise.reject(new Error("Node.js filesystem modules not available"));
+        }
+
+        var nodeOs = nodeRequire("os");
+        var extensionRoot = csInterface.getSystemPath(SystemPath.EXTENSION);
+        var renderedMixPath = nodePath.join(nodeOs.tmpdir(), "duckycut_mixdown_" + Date.now() + ".wav");
+        var workAreaType = rangeInfo && rangeInfo.mode === "inout" ? 1 : 0;
+        var savedMuteStates = [];
+
+        function restore() {
+            return evalScript("restoreAudioTrackMutes(" + jsxStringArg(JSON.stringify(savedMuteStates)) + ")")
+                .then(function(restoreRaw) {
+                    var restoreResult = {};
+                    try { restoreResult = JSON.parse(restoreRaw || "{}"); } catch (e) {}
+                    if (!restoreResult.success) {
+                        var restoreMessage = restoreResult.error || "Unable to restore Premiere track mutes";
+                        if (restoreResult.diagnostics) {
+                            try { restoreMessage += ": " + JSON.stringify(restoreResult.diagnostics); } catch (diagErr) {}
+                        }
+                        throw new Error(restoreMessage);
+                    }
+                    return restoreResult;
+                });
+        }
+
+        function restoreAndReject(err) {
+            return restore().then(function() {
+                throw err;
+            }, function() {
+                throw err;
+            });
+        }
+
+        return evalScript("muteAudioTracks(" + jsxStringArg(JSON.stringify(selectedIdx)) + ")")
+            .then(function(muteRaw) {
+                var muteResult = {};
+                try { muteResult = JSON.parse(muteRaw || "{}"); } catch (e) {}
+                if (muteResult.diagnostics) {
+                    try { console.log("[Duckycut] muteAudioTracks diagnostics:", muteResult.diagnostics); } catch (logErr) {}
+                }
+                savedMuteStates = muteResult.savedStates || [];
+                if (!muteResult.success) {
+                    var muteMessage = muteResult.error || "Unable to set Premiere track mutes";
+                    if (muteResult.diagnostics) {
+                        try { muteMessage += ": " + JSON.stringify(muteResult.diagnostics); } catch (diagErr) {}
+                    }
+                    throw new Error(muteMessage);
+                }
+
+                return evalScript(
+                    "exportSequenceAudio(" +
+                    jsxStringArg(renderedMixPath) + "," +
+                    jsxStringArg(extensionRoot) + "," +
+                    workAreaType +
+                    ")"
+                );
+            })
+            .then(function(exportRaw) {
+                var exportResult = {};
+                try { exportResult = JSON.parse(exportRaw || "{}"); } catch (e) {}
+                if (!exportResult.success) {
+                    throw new Error(exportResult.error || "Premiere render failed");
+                }
+                return waitForStableFile(renderedMixPath, function(size) {
+                    updateProgress(25, "Rendering Premiere audio mix... " + Math.round(size / 1024 / 1024) + " MB");
+                });
+            })
+            .then(function() {
+                return restore().then(function() {
+                    return renderedMixPath;
+                });
+            }, restoreAndReject);
+    }
+
     function runAnalysis() {
         if (!sequenceInfo) { setStatus("No active sequence", "error"); return; }
-        if (!silenceDetector) { setStatus("Silence detector not loaded", "error"); return; }
+        if (!silenceDetector || !silenceDetector.detectSilence) { setStatus("Silence detector not loaded", "error"); return; }
 
         var selectedIdx = getSelectedTrackIndices();
         if (selectedIdx.length === 0) {
@@ -585,8 +702,19 @@
                 return;
             }
 
-            updateProgress(25, "Running FFmpeg silence detection on selected tracks...");
-            silenceDetector.detectSilenceFromSequence(selectedAudioTracks, threshold, minDuration)
+            updateProgress(25, "Rendering Premiere audio mix...");
+            ensureSelectedTrackMixdown(selectedIdx, analysisRangeInfo)
+                .then(function(renderedMixPath) {
+                    updateProgress(45, "Running FFmpeg silence detection on Premiere render...");
+                    return silenceDetector.detectSilence(renderedMixPath, threshold, minDuration)
+                        .then(function(result) {
+                            try { nodeFs.unlinkSync(renderedMixPath); } catch (_) {}
+                            return result;
+                        }, function(err) {
+                            try { nodeFs.unlinkSync(renderedMixPath); } catch (_) {}
+                            throw err;
+                        });
+                })
                 .then(function(result) {
                     processDetectionResult(result);
                 })
@@ -625,7 +753,7 @@
 
                 updateProgress(100, "Analysis complete!");
                 showResults(result, keepZones, true);
-                setStatus("Analysis complete — threshold: " + threshold + " dB (selected tracks)", "success");
+                setStatus("Analysis complete — threshold: " + threshold + " dB (Premiere audio mix)", "success");
                 hideProgress(); elBtnAnalyze.disabled = false;
             }
         });

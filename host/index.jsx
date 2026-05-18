@@ -35,6 +35,7 @@ if (typeof JSON === "undefined") {
 
 var TICKS = 254016000000;
 var DUCKYCUT_CANCEL_APPLY = false;
+var DUCKYCUT_AUDIO_MUTE_STATES = null;
 
 function ticksToSeconds(t) {
     try { return Number(t) / TICKS; } catch(e) { return 0; }
@@ -1301,6 +1302,7 @@ function muteAudioTracks(selectedIndicesJson) {
         }
 
         var savedStates = [];
+        var trackPlans = [];
         var numTracks = 0;
         try { numTracks = seq.audioTracks.numTracks; } catch (e) {}
 
@@ -1313,17 +1315,55 @@ function muteAudioTracks(selectedIndicesJson) {
 
                 var isSelected = false;
                 for (var j = 0; j < selectedIndices.length; j++) {
-                    if (selectedIndices[j] === i) { isSelected = true; break; }
+                    if (parseInt(selectedIndices[j], 10) === i) { isSelected = true; break; }
                 }
-                if (isSelected) {
-                    try { track.setMute(false); } catch (e) {}
-                } else {
-                    try { track.setMute(true); } catch (e) {}
-                }
+                trackPlans.push({ index: i, muteValue: isSelected ? 0 : 1, expectMuted: !isSelected });
             } catch (e) {}
         }
 
-        return JSON.stringify({ success: true, savedStates: savedStates });
+        DUCKYCUT_AUDIO_MUTE_STATES = savedStates;
+
+        var diagnostics = [];
+        for (var p = 0; p < trackPlans.length; p++) {
+            try {
+                var plan = trackPlans[p];
+                var plannedTrack = seq.audioTracks[plan.index];
+                var setResult = null;
+                var setError = "";
+                try { setResult = plannedTrack.setMute(plan.muteValue); } catch (setErr) { setError = setErr.toString(); }
+
+                var afterMuted = false;
+                var readError = "";
+                try { afterMuted = plannedTrack.isMuted(); } catch (readErr) { readError = readErr.toString(); }
+
+                diagnostics.push({
+                    index: plan.index,
+                    requestedMuted: plan.expectMuted,
+                    afterMuted: afterMuted,
+                    setResult: setResult,
+                    setError: setError,
+                    readError: readError
+                });
+
+                if (setError || readError || afterMuted !== plan.expectMuted) {
+                    return JSON.stringify({
+                        success: false,
+                        error: "Mute verification failed for audio track " + (plan.index + 1),
+                        savedStates: savedStates,
+                        diagnostics: diagnostics
+                    });
+                }
+            } catch (ePlan) {
+                return JSON.stringify({
+                    success: false,
+                    error: "Mute verification failed: " + ePlan.toString(),
+                    savedStates: savedStates,
+                    diagnostics: diagnostics
+                });
+            }
+        }
+
+        return JSON.stringify({ success: true, savedStates: savedStates, diagnostics: diagnostics });
     } catch (e) {
         return '{"success":false,"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
     }
@@ -1334,22 +1374,51 @@ function restoreAudioTrackMutes(savedStatesJson) {
         var seq = app.project.activeSequence;
         if (!seq) return '{"success":false,"error":"No active sequence"}';
 
-        var savedStates = [];
-        try { savedStates = eval("(" + savedStatesJson + ")") || []; } catch (e) {
-            return '{"success":false,"error":"Bad states JSON: ' + e.toString().replace(/"/g, '\\"') + '"}';
+        var savedStates = DUCKYCUT_AUDIO_MUTE_STATES || [];
+        if (savedStatesJson !== undefined && savedStatesJson !== null && String(savedStatesJson) !== "") {
+            try { savedStates = eval("(" + savedStatesJson + ")") || []; } catch (e) {
+                return '{"success":false,"error":"Bad states JSON: ' + e.toString().replace(/"/g, '\\"') + '"}';
+            }
         }
 
+        var diagnostics = [];
         for (var i = 0; i < savedStates.length; i++) {
             try {
                 var state = savedStates[i];
                 var track = seq.audioTracks[state.index];
                 if (track) {
-                    try { track.setMute(state.wasMuted); } catch (e) {}
+                    var restoreValue = state.wasMuted ? 1 : 0;
+                    var setResult = null;
+                    var setError = "";
+                    try { setResult = track.setMute(restoreValue); } catch (setErr) { setError = setErr.toString(); }
+
+                    var afterMuted = false;
+                    var readError = "";
+                    try { afterMuted = track.isMuted(); } catch (readErr) { readError = readErr.toString(); }
+
+                    diagnostics.push({
+                        index: state.index,
+                        requestedMuted: state.wasMuted,
+                        afterMuted: afterMuted,
+                        setResult: setResult,
+                        setError: setError,
+                        readError: readError
+                    });
+
+                    if (setError || readError || afterMuted !== state.wasMuted) {
+                        DUCKYCUT_AUDIO_MUTE_STATES = null;
+                        return JSON.stringify({
+                            success: false,
+                            error: "Mute restore verification failed for audio track " + (state.index + 1),
+                            diagnostics: diagnostics
+                        });
+                    }
                 }
             } catch (e) {}
         }
 
-        return '{"success":true}';
+        DUCKYCUT_AUDIO_MUTE_STATES = null;
+        return JSON.stringify({ success: true, diagnostics: diagnostics });
     } catch (e) {
         return '{"success":false,"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
     }

@@ -207,24 +207,7 @@ function buildMixedAudio(clips, outputPath) {
 //  fails for any reason (e.g., clips with missing mediaPath).
 // ─────────────────────────────────────────────────────────────────
 async function detectSilenceFromSequence(audioTracks, threshold, minDuration) {
-    // Collect valid clips from all provided tracks
-    const clips = [];
-    for (const track of audioTracks) {
-        for (const clip of (track.clips || [])) {
-            if (clip.mediaPath && clip.seqEnd > clip.seqStart) {
-                clips.push({
-                    mediaPath: clip.mediaPath,
-                    seqStart:  clip.seqStart,
-                    seqEnd:    clip.seqEnd,
-                    srcIn:     typeof clip.srcIn  === "number" ? clip.srcIn  : 0,
-                    srcOut:    typeof clip.srcOut === "number" && clip.srcOut > clip.srcIn
-                                   ? clip.srcOut
-                                   : clip.srcIn + (clip.seqEnd - clip.seqStart),
-                });
-            }
-        }
-    }
-
+    const clips = collectSequenceAudioClips(audioTracks);
     if (clips.length === 0) {
         throw new Error("No audio clips with media paths found in the selected tracks");
     }
@@ -249,6 +232,41 @@ async function detectSilenceFromSequence(audioTracks, threshold, minDuration) {
 // ─────────────────────────────────────────────────────────────────
 //  Helpers
 // ─────────────────────────────────────────────────────────────────
+async function probeAudioFromSequence(audioTracks) {
+    const clips = collectSequenceAudioClips(audioTracks);
+    if (clips.length === 0) {
+        throw new Error("No audio clips with media paths found in the selected tracks");
+    }
+
+    const tempWav = path.join(os.tmpdir(), `duckycut_probe_${Date.now()}.wav`);
+    try {
+        await buildMixedAudio(clips, tempWav);
+        return await probeAudio(tempWav);
+    } finally {
+        try { fs.unlinkSync(tempWav); } catch (_) {}
+    }
+}
+
+function collectSequenceAudioClips(audioTracks) {
+    const clips = [];
+    for (const track of audioTracks || []) {
+        for (const clip of (track.clips || [])) {
+            if (clip.mediaPath && clip.seqEnd > clip.seqStart) {
+                clips.push({
+                    mediaPath: clip.mediaPath,
+                    seqStart:  clip.seqStart,
+                    seqEnd:    clip.seqEnd,
+                    srcIn:     typeof clip.srcIn  === "number" ? clip.srcIn  : 0,
+                    srcOut:    typeof clip.srcOut === "number" && clip.srcOut > clip.srcIn
+                                   ? clip.srcOut
+                                   : clip.srcIn + (clip.seqEnd - clip.seqStart),
+                });
+            }
+        }
+    }
+    return clips;
+}
+
 function parseSilenceOutput(output) {
     const starts = [];
     const ends   = [];
@@ -271,4 +289,4 @@ function formatTime(seconds) {
     return `${m}m ${s}s`;
 }
 
-module.exports = { detectSilence, probeAudio, detectSilenceFromSequence, buildMixedAudio, parseFfmpegDuration };
+module.exports = { detectSilence, probeAudio, probeAudioFromSequence, detectSilenceFromSequence, buildMixedAudio, parseFfmpegDuration };

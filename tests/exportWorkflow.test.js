@@ -28,6 +28,48 @@ test("panel analysis copy describes Premiere-rendered selected-track detection",
     assert.match(main, /Premiere audio mix|Premiere render|selected tracks/i);
 });
 
+test("panel exposes a reduced prerender checkbox", () => {
+    const html = readProjectFile("client/index.html");
+
+    assert.match(html, /id="reducedPrerender"/, "UI should expose the reduced prerender checkbox");
+    assert.match(html, /type="checkbox"\s+id="reducedPrerender"|id="reducedPrerender"\s+type="checkbox"/, "reduced prerender control should be a checkbox");
+    assert.match(html, /Reduced prerender/i, "checkbox should be labelled as reduced prerender");
+});
+
+test("panel passes reduced prerender mode into Premiere export", () => {
+    const main = readProjectFile("client/js/main.js");
+    const mixdownStart = main.indexOf("function ensureSelectedTrackMixdown");
+    const analysisStart = main.indexOf("function runAnalysis");
+    assert.notEqual(mixdownStart, -1, "ensureSelectedTrackMixdown should exist");
+    assert.notEqual(analysisStart, -1, "runAnalysis should exist");
+
+    const mixdownEnd = main.indexOf("\n    function runAnalysis", mixdownStart + 1);
+    const mixdownFn = main.slice(mixdownStart, mixdownEnd === -1 ? main.length : mixdownEnd);
+    const analysisEnd = main.indexOf("\n    //", analysisStart + 1);
+    const analysisFn = main.slice(analysisStart, analysisEnd === -1 ? main.length : analysisEnd);
+
+    assert.match(main, /elReducedPrerender\s*=\s*document\.getElementById\("reducedPrerender"\)/, "panel should read the reduced prerender checkbox");
+    assert.match(analysisFn, /presetMode\s*=\s*elReducedPrerender\.checked\s*\?\s*"reduced"\s*:\s*"default"/, "Analyze should derive a preset mode from the checkbox");
+    assert.match(analysisFn, /ensureSelectedTrackMixdown\(selectedIdx,\s*analysisRangeInfo,\s*presetMode\)/, "Analyze should pass preset mode into mixdown");
+    assert.match(mixdownFn, /function ensureSelectedTrackMixdown\(selectedIdx,\s*rangeInfo,\s*presetMode\)/, "mixdown helper should accept preset mode");
+    assert.match(mixdownFn, /exportSequenceAudio\([\s\S]*jsxStringArg\(presetMode\)/, "Premiere export call should receive preset mode");
+});
+
+test("host reduced prerender mode uses bundled Silero analysis preset", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function exportSequenceAudio");
+    assert.notEqual(start, -1, "exportSequenceAudio should exist");
+
+    const end = host.indexOf("\n/**", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /function exportSequenceAudio\(outputPath,\s*extensionPath,\s*workAreaType,\s*presetMode\)/, "exportSequenceAudio should accept a preset mode");
+    assert.match(fn, /Duckycut_Silero_Analysis\.epr/, "reduced mode should reference the bundled reduced preset");
+    assert.match(fn, /cleanExtPath[\s\S]*preset[\s\S]*Duckycut_Silero_Analysis\.epr/, "reduced preset path should be resolved relative to the extension path");
+    assert.match(fn, /new File\(reducedPresetPath\)/, "host should verify the reduced preset exists");
+    assert.match(fn, /Reduced prerender preset not found/, "missing reduced preset should produce a clear error");
+});
+
 test("host muteAudioTracks makes selected tracks audible and others muted", () => {
     const host = readProjectFile("host/index.jsx");
     const start = host.indexOf("function muteAudioTracks");
@@ -50,7 +92,7 @@ test("panel Analyze renders the selected Premiere mix before detecting silence",
     const end = main.indexOf("\n    //", start + 1);
     const fn = main.slice(start, end === -1 ? main.length : end);
 
-    assert.match(fn, /ensureSelectedTrackMixdown\(selectedIdx,\s*analysisRangeInfo\)/, "Analyze should render the selected Premiere mix before silence detection");
+    assert.match(fn, /ensureSelectedTrackMixdown\(selectedIdx,\s*analysisRangeInfo,\s*presetMode\)/, "Analyze should render the selected Premiere mix before silence detection");
     assert.match(fn, /detectSilence\(renderedMixPath/, "Analyze should run silencedetect on the rendered Premiere WAV");
     assert.doesNotMatch(fn, /detectSilenceFromSequence\(selectedAudioTracks/, "Analyze should not use FFmpeg sequence mix as the primary path");
 });
@@ -384,6 +426,22 @@ test("host exposes sequence In-Out range in ticks and seconds", () => {
     assert.match(fn, /durationSeconds/, "range should return durationSeconds");
 });
 
+test("host normalizes sequence In-Out range by subtracting zeroPoint", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function getSequenceInOutRange");
+    assert.notEqual(start, -1, "getSequenceInOutRange should exist");
+
+    const end = host.indexOf("\n/**", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /_parseZeroPoint\(seq\.zeroPoint\)/, "range should read the sequence zeroPoint");
+    assert.match(fn, /rawStartTicks/, "range should keep raw In ticks for diagnostics");
+    assert.match(fn, /rawEndTicks/, "range should keep raw Out ticks for diagnostics");
+    assert.match(fn, /startTicks\s*=\s*rawStartTicks\s*-\s*zeroPointTicks/, "range start should be sequence-relative");
+    assert.match(fn, /endTicks\s*=\s*rawEndTicks\s*-\s*zeroPointTicks/, "range end should be sequence-relative");
+    assert.match(fn, /zeroPointSeconds/, "range diagnostics should include zeroPointSeconds");
+});
+
 test("host exportSequenceAudio accepts workAreaType for In-Out exports", () => {
     const host = readProjectFile("host/index.jsx");
     const start = host.indexOf("function exportSequenceAudio");
@@ -417,9 +475,44 @@ test("panel Analyze validates In-Out range, renders that range, and offsets dete
     assert.match(fn, /getSelectedRangeMode\(/, "Analyze should read selected range mode");
     assert.match(fn, /getSequenceInOutRange\(/, "Analyze should request In-Out range from host");
     assert.match(fn, /Define In and Out|set In and Out/i, "invalid In-Out should fail clearly");
-    assert.match(fn, /ensureSelectedTrackMixdown\(selectedIdx,\s*analysisRangeInfo\)/, "Analyze should render selected Premiere tracks for the active range");
+    assert.match(fn, /ensureSelectedTrackMixdown\(selectedIdx,\s*analysisRangeInfo,\s*presetMode\)/, "Analyze should render selected Premiere tracks for the active range");
     assert.match(fn, /workAreaType\s*=\s*1/, "In-Out Analyze should export with workAreaType=1");
-    assert.match(fn, /offsetIntervals\(/, "Analyze should offset FFmpeg intervals into sequence time");
+    assert.match(fn, /offsetIntervals(?:ForAnalysis)?\(/, "Analyze should offset FFmpeg intervals into sequence time");
+});
+
+test("panel computes In-Out keep zones in range-local time before applying sequence offset", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function processDetectionResult");
+    assert.notEqual(start, -1, "processDetectionResult should exist");
+
+    const end = main.indexOf("\n            }", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /rawSilenceIntervals\s*=\s*result\.silenceIntervals\s*\|\|\s*\[\]/, "Analyze should keep FFmpeg intervals in local range time");
+    assert.match(fn, /analysisWindowDuration\s*=\s*mediaDuration/, "Analyze should separate display duration from calculation duration");
+    assert.match(fn, /analysisWindowDuration\s*=\s*analysisRangeInfo\.durationSeconds/, "In-Out calculation should use range duration");
+    assert.match(fn, /computeCleanCutZones\(\s*rawSilenceIntervals,\s*analysisWindowDuration/, "Clean Cut should receive local intervals and local duration");
+    assert.match(fn, /keepZones\s*=\s*offsetIntervalsForAnalysis\(\s*computedKeepZones,\s*analysisRangeInfo\.startSeconds\s*\)/, "Keep zones should be offset only after local calculation");
+    assert.match(fn, /silenceIntervals\s*=\s*offsetIntervalsForAnalysis\(\s*rawSilenceIntervals,\s*analysisRangeInfo\.startSeconds\s*\)/, "Displayed silence intervals should be offset after calculation");
+
+    const computeIndex = fn.indexOf("computeCleanCutZones");
+    const keepOffsetIndex = fn.indexOf("keepZones = offsetIntervalsForAnalysis");
+    assert.ok(computeIndex !== -1 && keepOffsetIndex > computeIndex, "keepZones offset must happen after computeCleanCutZones");
+});
+
+test("panel Analyze does not dereference cutZones namespace directly in In-Out result handling", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function runAnalysis");
+    assert.notEqual(start, -1, "runAnalysis should exist");
+
+    const end = main.indexOf("\n    // â•", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.doesNotMatch(
+        fn,
+        /window\.Duckycut\.cutZones\.offsetIntervals/,
+        "In-Out Analyze should use a guarded helper or fallback when cutZones.js is unavailable"
+    );
 });
 
 test("panel Analyze uses sequence duration after Premiere-rendered detection", () => {
@@ -442,7 +535,7 @@ test("panel clamps Apply cut zones to analyzed In-Out range", () => {
     const end = main.indexOf("\n    // ── UI Helpers", start + 1);
     const fn = main.slice(start, end === -1 ? main.length : end);
 
-    assert.match(fn, /intersectIntervalsWithRange\(/, "Apply should clamp cut zones to In-Out range");
+    assert.match(fn, /intersectIntervalsWithRange(?:ForApply)?\(/, "Apply should clamp cut zones to In-Out range");
     assert.match(fn, /analysisRangeInfo/, "Apply should use range captured during Analyze");
     assert.match(fn, /range:/, "Apply should pass range to host opts");
 });
@@ -487,6 +580,43 @@ test("host uses QE-specific timecode for drop-frame razor calls", () => {
     assert.match(fn, /displayStartTC/, "zone diagnostics should keep display drop-frame timecode separate from QE razor timecode");
     assert.match(fn, /displayEndTC/, "zone diagnostics should keep display drop-frame timecode separate from QE razor timecode");
     assert.match(fn, /_zoneToDisplayTC/, "host diagnostics should still expose display timecode");
+});
+
+test("panel asks host to use display timecode for In-Out drop-frame razor", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function applyCutsInPlaceFromPanel");
+    assert.notEqual(start, -1, "applyCutsInPlaceFromPanel should exist");
+
+    const end = main.indexOf("\n    //", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /qeTimecodeMode/, "Apply should send an explicit QE timecode mode");
+    assert.match(fn, /isDropFrame\s*&&\s*analysisRangeInfo\s*&&\s*analysisRangeInfo\.mode\s*===\s*"inout"\s*\?\s*"display"\s*:\s*"absolute"/, "In-Out should use display timecode only when the sequence is confirmed drop-frame");
+});
+
+test("host can switch drop-frame razor calls to display timecode", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function applyCutsInPlace");
+    assert.notEqual(start, -1, "applyCutsInPlace should exist");
+
+    const end = host.indexOf("\nfunction applyCutsInPlaceFile", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /qeTimecodeMode/, "host should read the requested QE timecode mode");
+    assert.match(fn, /qeTimecodeMode\s*===\s*"display"[\s\S]*_zoneToDisplayTC/, "display mode should send display DF labels to razor");
+    assert.match(fn, /_secondsToQeRazorTimecodeHost/, "absolute mode should keep the existing QE-specific helper");
+});
+
+test("host does not assume NTSC sequences are drop-frame when display format is unavailable", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function getSequenceSettings");
+    assert.notEqual(start, -1, "getSequenceSettings should exist");
+
+    const end = host.indexOf("\nfunction getSequenceInOutRange", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /videoDisplayFormat/, "host should inspect Premiere's display format when available");
+    assert.doesNotMatch(fn, /if \(!isDropFrame && isNTSC\)[\s\S]*isDropFrame\s*=\s*true/, "NTSC rate alone should not force drop-frame");
 });
 
 test("host applyCutsInPlace filters opts.range using tick bounds", () => {

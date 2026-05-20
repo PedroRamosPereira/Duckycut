@@ -7,8 +7,8 @@
  *      channel; generator no longer duplicates A1 across all tracks.
  *   3. Framerate: getSequenceSettings() reads timebase directly from the
  *      sequence — no hardcoded 29.97 fallback unless the API truly fails.
- *   4. Audio selection: Analyze builds an FFmpeg mix only from checked
- *      audio tracks, instead of trusting Premiere mute state during export.
+ *   4. Audio selection: Analyze renders the checked Premiere tracks with
+ *      temporary mutes, then runs detection on that rendered mix.
  */
 
 (function () {
@@ -95,6 +95,7 @@
     const elBtnLoadPreset     = document.getElementById("btnLoadPreset");
     const elPresetFileInput   = document.getElementById("presetFileInput");
     const elDeleteSilence     = document.getElementById("deleteSilence");
+    const elReducedPrerender  = document.getElementById("reducedPrerender");
     const elTrackList         = document.getElementById("trackList");
     const elBtnAnalyze        = document.getElementById("btnAnalyze");
     const elResultsSection    = document.getElementById("resultsSection");
@@ -258,6 +259,7 @@
             minClipDuration: parseInt(elMinClipDuration.value, 10),
             minGapFill:      parseInt(elMinGapFill.value, 10),
             deleteSilence:   elDeleteSilence.checked,
+            reducedPrerender: elReducedPrerender.checked,
         };
     }
 
@@ -269,6 +271,7 @@
         if (s.minClipDuration != null) { elMinClipDuration.value = s.minClipDuration; elMinClipVal.textContent = s.minClipDuration + " ms"; }
         if (s.minGapFill != null)      { elMinGapFill.value = s.minGapFill; elMinGapFillVal.textContent = s.minGapFill + " ms"; }
         if (s.deleteSilence != null)   { elDeleteSilence.checked = s.deleteSilence; }
+        if (s.reducedPrerender != null){ elReducedPrerender.checked = s.reducedPrerender; }
         if (s.paddingLinked != null && s.paddingLinked !== paddingLinked) { togglePaddingLink(); }
     }
 
@@ -558,11 +561,12 @@
         });
     }
 
-    function ensureSelectedTrackMixdown(selectedIdx, rangeInfo) {
+    function ensureSelectedTrackMixdown(selectedIdx, rangeInfo, presetMode) {
         if (!nodeRequire || !nodeFs || !nodePath) {
             return Promise.reject(new Error("Node.js filesystem modules not available"));
         }
 
+        presetMode = presetMode || "default";
         var nodeOs = nodeRequire("os");
         var extensionRoot = csInterface.getSystemPath(SystemPath.EXTENSION);
         var renderedMixPath = nodePath.join(nodeOs.tmpdir(), "duckycut_mixdown_" + Date.now() + ".wav");
@@ -613,7 +617,8 @@
                     "exportSequenceAudio(" +
                     jsxStringArg(renderedMixPath) + "," +
                     jsxStringArg(extensionRoot) + "," +
-                    workAreaType +
+                    workAreaType + "," +
+                    jsxStringArg(presetMode) +
                     ")"
                 );
             })
@@ -688,12 +693,22 @@
                 rangeInfo.mode = "inout";
                 rangeInfo.workAreaType = 1;
                 analysisRangeInfo = rangeInfo;
+                console.log("[Duckycut] In-Out range:", {
+                    startSeconds: rangeInfo.startSeconds,
+                    endSeconds: rangeInfo.endSeconds,
+                    durationSeconds: rangeInfo.durationSeconds,
+                    rawStartSeconds: rangeInfo.rawStartSeconds,
+                    rawEndSeconds: rangeInfo.rawEndSeconds,
+                    zeroPointSeconds: rangeInfo.zeroPointSeconds,
+                    normalizedByZeroPoint: rangeInfo.normalizedByZeroPoint
+                });
             }
 
             updateProgress(10, "Preparing audio for analysis...");
 
             var threshold   = computeThreshold(elAggressiveness.value);
             var minDuration = parseInt(elMinDuration.value, 10) / 1000;
+            var presetMode = elReducedPrerender.checked ? "reduced" : "default";
 
             var selectedAudioTracks = buildSelectedAudioTracksForDetection(selectedIdx, sequenceClips, analysisRangeInfo);
             if (selectedAudioTracks.length === 0) {
@@ -703,7 +718,7 @@
             }
 
             updateProgress(25, "Rendering Premiere audio mix...");
-            ensureSelectedTrackMixdown(selectedIdx, analysisRangeInfo)
+            ensureSelectedTrackMixdown(selectedIdx, analysisRangeInfo, presetMode)
                 .then(function(renderedMixPath) {
                     updateProgress(45, "Running FFmpeg silence detection on Premiere render...");
                     return silenceDetector.detectSilence(renderedMixPath, threshold, minDuration)
@@ -726,23 +741,21 @@
             function processDetectionResult(result) {
                 updateProgress(80, "Applying Clean Cut algorithm...");
 
-                var silenceIntervals = result.silenceIntervals;
+                var rawSilenceIntervals = result.silenceIntervals || [];
+                var silenceIntervals = rawSilenceIntervals;
                 var mediaDuration = seqSettings && seqSettings.durationSeconds
                     ? seqSettings.durationSeconds
                     : result.mediaDuration;
+                var analysisWindowDuration = mediaDuration;
                 if (analysisRangeInfo && analysisRangeInfo.mode === "inout") {
-                    silenceIntervals = window.Duckycut.cutZones.offsetIntervals(
-                        result.silenceIntervals,
-                        analysisRangeInfo.startSeconds
-                    );
-                    mediaDuration = mediaDuration || analysisRangeInfo.endSeconds;
+                    analysisWindowDuration = analysisRangeInfo.durationSeconds;
                 }
                 result.mediaDuration = mediaDuration;
                 analysisResult = result;
 
-                keepZones = computeCleanCutZones(
-                    silenceIntervals,
-                    mediaDuration,
+                var computedKeepZones = computeCleanCutZones(
+                    rawSilenceIntervals,
+                    analysisWindowDuration,
                     {
                         paddingIn:       parseInt(elPaddingIn.value, 10)       / 1000,
                         paddingOut:      parseInt(elPaddingOut.value, 10)      / 1000,
@@ -750,6 +763,15 @@
                         minGapDuration:  parseInt(elMinGapFill.value, 10)      / 1000,
                     }
                 );
+
+                if (analysisRangeInfo && analysisRangeInfo.mode === "inout") {
+                    silenceIntervals = offsetIntervalsForAnalysis(rawSilenceIntervals, analysisRangeInfo.startSeconds);
+                    keepZones = offsetIntervalsForAnalysis(computedKeepZones, analysisRangeInfo.startSeconds);
+                } else {
+                    silenceIntervals = rawSilenceIntervals;
+                    keepZones = computedKeepZones;
+                }
+                result.silenceIntervals = silenceIntervals;
 
                 updateProgress(100, "Analysis complete!");
                 showResults(result, keepZones, true);
@@ -837,6 +859,42 @@
             else merged.push([arr[i][0], arr[i][1]]);
         }
         return merged;
+    }
+
+    function getCutZoneHelpers() {
+        return window.Duckycut && window.Duckycut.cutZones ? window.Duckycut.cutZones : null;
+    }
+
+    function offsetIntervalsForAnalysis(intervals, offsetSeconds) {
+        var helpers = getCutZoneHelpers();
+        if (helpers && helpers.offsetIntervals) {
+            return helpers.offsetIntervals(intervals, offsetSeconds);
+        }
+        var offset = Number(offsetSeconds) || 0;
+        var out = [];
+        if (!intervals) return out;
+        for (var i = 0; i < intervals.length; i++) {
+            out.push([Number(intervals[i][0]) + offset, Number(intervals[i][1]) + offset]);
+        }
+        return out;
+    }
+
+    function intersectIntervalsWithRangeForApply(intervals, range) {
+        var helpers = getCutZoneHelpers();
+        if (helpers && helpers.intersectIntervalsWithRange) {
+            return helpers.intersectIntervalsWithRange(intervals, range);
+        }
+        var out = [];
+        if (!intervals || !range) return out;
+        var start = Number(range.startSeconds);
+        var end = Number(range.endSeconds);
+        if (!(end > start)) return out;
+        for (var i = 0; i < intervals.length; i++) {
+            var s = Math.max(Number(intervals[i][0]), start);
+            var e = Math.min(Number(intervals[i][1]), end);
+            if (e > s) out.push([s, e]);
+        }
+        return out;
     }
 
     // ── Show Results ─────────────────────────────────────────────
@@ -941,7 +999,7 @@
 
         var rangedCuts = rawCuts;
         if (analysisRangeInfo && analysisRangeInfo.mode === "inout") {
-            rangedCuts = window.Duckycut.cutZones.intersectIntervalsWithRange(rawCuts, analysisRangeInfo);
+            rangedCuts = intersectIntervalsWithRangeForApply(rawCuts, analysisRangeInfo);
         }
 
         // Snap each boundary to a frame so the host's TC conversion can't shift
@@ -976,6 +1034,7 @@
             isNTSC: isNTSC,
             isDropFrame: isDropFrame,
             tickMode: true,
+            qeTimecodeMode: isDropFrame && analysisRangeInfo && analysisRangeInfo.mode === "inout" ? "display" : "absolute",
             range: analysisRangeInfo && analysisRangeInfo.mode === "inout" ? {
                 startSeconds: analysisRangeInfo.startSeconds,
                 endSeconds: analysisRangeInfo.endSeconds

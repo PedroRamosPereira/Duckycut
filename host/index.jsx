@@ -451,8 +451,9 @@ function getAllMediaPaths() {
  *
  * @param {string} outputPath    - Destination WAV path (forward slashes OK)
  * @param {string} extensionPath - Root directory of the CEP extension
+ * @param {string} presetMode    - "reduced" uses bundled 16kHz mono preset
  */
-function exportSequenceAudio(outputPath, extensionPath, workAreaType) {
+function exportSequenceAudio(outputPath, extensionPath, workAreaType, presetMode) {
     try {
         var seq = app.project.activeSequence;
         if (!seq) return '{"success":false,"error":"No active sequence"}';
@@ -462,6 +463,7 @@ function exportSequenceAudio(outputPath, extensionPath, workAreaType) {
         var cleanExtPath = decodeURI(extensionPath).replace(/^file:\/{2,3}/i, "").replace(/\\/g, "/");
 
         var outNorm = cleanOutPath.replace(/\//g, "\\");
+        var requestedPresetMode = String(presetMode || "default");
 
         // ── Locate a WAV encoder preset (.epr) ─────────────────────
         // Adobe moves preset GUIDs and filenames between versions:
@@ -478,17 +480,29 @@ function exportSequenceAudio(outputPath, extensionPath, workAreaType) {
             try { return f && typeof f.getFiles === "function"; } catch (e) { return false; }
         }
 
-        // 1. Bundled inside extension root / server / presets
         var extRootBack = cleanExtPath.replace(/\//g, "\\");
-        var bundled = [
-            extRootBack + "\\WAV.epr",
-            extRootBack + "\\server\\WAV.epr",
-            extRootBack + "\\presets\\WAV.epr"
-        ];
-        for (var bc = 0; bc < bundled.length; bc++) {
-            triedPaths.push(bundled[bc]);
-            var bf = new File(bundled[bc]);
-            if (bf.exists) { presetPath = bundled[bc]; break; }
+        if (requestedPresetMode === "reduced") {
+            var reducedPresetPath = cleanExtPath + "/preset/Duckycut_Silero_Analysis.epr";
+            triedPaths.push(reducedPresetPath);
+            var reducedPresetFile = new File(reducedPresetPath);
+            if (!reducedPresetFile.exists) {
+                return '{"success":false,"error":"Reduced prerender preset not found: ' + reducedPresetPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"}';
+            }
+            presetPath = reducedPresetFile.fsName;
+        }
+
+        // 1. Bundled inside extension root / server / presets
+        if (!presetPath) {
+            var bundled = [
+                extRootBack + "\\WAV.epr",
+                extRootBack + "\\server\\WAV.epr",
+                extRootBack + "\\presets\\WAV.epr"
+            ];
+            for (var bc = 0; bc < bundled.length; bc++) {
+                triedPaths.push(bundled[bc]);
+                var bf = new File(bundled[bc]);
+                if (bf.exists) { presetPath = bundled[bc]; break; }
+            }
         }
 
         // 2. Known concrete paths across years + GUIDs
@@ -601,6 +615,7 @@ function exportSequenceAudio(outputPath, extensionPath, workAreaType) {
             success: true,
             path:    cleanOutPath,
             preset:  presetPath.replace(/\\/g, "/"),
+            presetMode: requestedPresetMode,
             workAreaType: exportWorkAreaType
         });
     } catch (e) {
@@ -690,19 +705,18 @@ function getSequenceSettings() {
         // ── Drop-frame detection ──────────────────────────────────
         // PPro exposes drop-frame via videoDisplayFormat enum; values vary
         // between versions. Known: TIMEDISPLAY_30Drop = 100, TIMEDISPLAY_60Drop = 102.
-        // Fallback: assume DF when NTSC (PPro default for NTSC sequences).
+        // Do not infer DF from NTSC rate alone: 59.94 non-drop exists and QE
+        // will treat DF display labels as absolute frame labels in that case.
         var isDropFrame = false;
+        var videoDisplayFormat = null;
         try {
             var settings2 = seq.getSettings();
             if (settings2 && typeof settings2.videoDisplayFormat === "number") {
-                isDropFrame = (settings2.videoDisplayFormat === 100 ||
-                               settings2.videoDisplayFormat === 102);
+                videoDisplayFormat = settings2.videoDisplayFormat;
+                isDropFrame = (videoDisplayFormat === 100 ||
+                               videoDisplayFormat === 102);
             }
         } catch (e) {}
-        if (!isDropFrame && isNTSC) {
-            // Heuristic fallback: NTSC sequences default to DF in PPro.
-            isDropFrame = true;
-        }
 
         // ── Zero point (sequence start TC offset) ─────────────────
         var zeroPointSeconds = 0;
@@ -714,6 +728,7 @@ function getSequenceSettings() {
             exactFps:         fps,
             isNTSC:           isNTSC,
             isDropFrame:      isDropFrame,
+            videoDisplayFormat: videoDisplayFormat,
             xmlTimebase:      xmlTimebase,
             width:            width,
             height:           height,
@@ -738,13 +753,25 @@ function getSequenceInOutRange() {
         try { inTime = seq.getInPointAsTime(); } catch (e1) {}
         try { outTime = seq.getOutPointAsTime(); } catch (e2) {}
 
-        var startTicks = NaN;
-        var endTicks = NaN;
-        try { startTicks = Number(inTime.ticks); } catch (e3) {}
-        try { endTicks = Number(outTime.ticks); } catch (e4) {}
+        var rawStartTicks = NaN;
+        var rawEndTicks = NaN;
+        try { rawStartTicks = Number(inTime.ticks); } catch (e3) {}
+        try { rawEndTicks = Number(outTime.ticks); } catch (e4) {}
 
-        if (isNaN(startTicks)) startTicks = Math.round(_timeToSecondsPreferTicks(inTime) * TICKS);
-        if (isNaN(endTicks)) endTicks = Math.round(_timeToSecondsPreferTicks(outTime) * TICKS);
+        if (isNaN(rawStartTicks)) rawStartTicks = Math.round(_timeToSecondsPreferTicks(inTime) * TICKS);
+        if (isNaN(rawEndTicks)) rawEndTicks = Math.round(_timeToSecondsPreferTicks(outTime) * TICKS);
+
+        var zeroPointSeconds = 0;
+        try { zeroPointSeconds = _parseZeroPoint(seq.zeroPoint); } catch (e5) {}
+        var zeroPointTicks = Math.round(zeroPointSeconds * TICKS);
+        var normalizedByZeroPoint = false;
+        var startTicks = rawStartTicks;
+        var endTicks = rawEndTicks;
+        if (zeroPointTicks !== 0 && rawStartTicks >= zeroPointTicks && rawEndTicks > zeroPointTicks) {
+            startTicks = rawStartTicks - zeroPointTicks;
+            endTicks = rawEndTicks - zeroPointTicks;
+            normalizedByZeroPoint = true;
+        }
 
         var startSeconds = startTicks / TICKS;
         var endSeconds = endTicks / TICKS;
@@ -757,7 +784,14 @@ function getSequenceInOutRange() {
             endTicks: String(endTicks),
             startSeconds: startSeconds,
             endSeconds: endSeconds,
-            durationSeconds: endSeconds - startSeconds
+            durationSeconds: endSeconds - startSeconds,
+            rawStartTicks: String(rawStartTicks),
+            rawEndTicks: String(rawEndTicks),
+            rawStartSeconds: rawStartTicks / TICKS,
+            rawEndSeconds: rawEndTicks / TICKS,
+            zeroPointTicks: String(zeroPointTicks),
+            zeroPointSeconds: zeroPointSeconds,
+            normalizedByZeroPoint: normalizedByZeroPoint
         });
     } catch (e) {
         return '{"success":false,"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
@@ -786,6 +820,7 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         var fps         = (typeof opts.fps         === "number")  ? opts.fps         : 29.97;
         var isNTSC      = (typeof opts.isNTSC      === "boolean") ? opts.isNTSC      : false;
         var isDropFrame = (typeof opts.isDropFrame === "boolean") ? opts.isDropFrame : false;
+        var qeTimecodeMode = (opts.qeTimecodeMode === "display") ? "display" : "absolute";
         if (!zones.length) return '{"success":true,"applied":0,"skipped":0}';
 
         zones.sort(function (a, b) {
@@ -819,6 +854,7 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         } catch (eZP) {}
 
         function _zoneToTC(secs) {
+            if (qeTimecodeMode === "display") return _zoneToDisplayTC(secs);
             return _secondsToQeRazorTimecodeHost(secs + zpSec, fps, isDropFrame, isNTSC);
         }
 
@@ -1126,6 +1162,7 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                 endTC: endTC,
                 displayStartTC: displayStartTC,
                 displayEndTC: displayEndTC,
+                qeTimecodeMode: qeTimecodeMode,
                 clipsBefore: _countTimelineClips(seq),
                 clipsAfterRazor: null,
                 refreshAttempts: 0,
@@ -1246,6 +1283,7 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         diag.push("zpType=" + zpType);
         diag.push("zpSec=" + zpSec);
         diag.push("fps=" + fps + " isNTSC=" + isNTSC + " isDropFrame=" + isDropFrame);
+        diag.push("qeTimecodeMode=" + qeTimecodeMode);
         if (zones.length > 0) {
             // zones is sorted descending by start; first entry = latest, last entry = earliest.
             var firstZone = _normalizeCutZone(zones[zones.length - 1]);

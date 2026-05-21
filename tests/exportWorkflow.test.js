@@ -98,7 +98,8 @@ test("panel keeps rendered WAV until the user leaves the analysis session", () =
 
     assert.match(main, /analysisSession/, "panel should keep temporary analysis session state");
     assert.match(main, /function cleanupAnalysisSession\(/, "panel should centralize cleanup of session temp files");
-    assert.doesNotMatch(runFn, /unlinkSync\(renderedMixPath\)/, "Analyze should not delete the rendered WAV immediately after detectSilence");
+    assert.doesNotMatch(runFn, /detectSilence\(renderedMixPath/, "Analyze should not run FFmpeg silence detection before screen three");
+    assert.doesNotMatch(runFn, /unlinkSync\(renderedMixPath\)/, "Analyze should not delete the rendered WAV immediately after prerender");
     assert.match(runFn, /analysisSession\.renderedMixPath\s*=\s*renderedMixPath/, "Analyze should remember the rendered WAV path");
 });
 
@@ -174,17 +175,52 @@ test("host muteAudioTracks makes selected tracks audible and others muted", () =
     assert.match(fn, /Mute verification failed/, "host should fail before export if Premiere refuses the requested mute state");
 });
 
-test("panel Analyze renders the selected Premiere mix before detecting silence", () => {
+test("panel Analyze only renders the selected Premiere mix before manual config", () => {
     const main = readProjectFile("client/js/main.js");
     const start = main.indexOf("function runAnalysis");
     assert.notEqual(start, -1, "runAnalysis should exist");
 
-    const end = main.indexOf("\n    //", start + 1);
+    const end = main.indexOf("\n    function prepareCutZonesFromCurrentConfig", start + 1);
     const fn = main.slice(start, end === -1 ? main.length : end);
 
     assert.match(fn, /ensureSelectedTrackMixdown\(selectedIdx,\s*analysisRangeInfo,\s*presetMode\)/, "Analyze should render the selected Premiere mix before silence detection");
-    assert.match(fn, /detectSilence\(renderedMixPath/, "Analyze should run silencedetect on the rendered Premiere WAV");
+    assert.doesNotMatch(fn, /detectSilence\(renderedMixPath/, "Analyze should not run silencedetect until Apply Cuts");
     assert.doesNotMatch(fn, /detectSilenceFromSequence\(selectedAudioTracks/, "Analyze should not use FFmpeg sequence mix as the primary path");
+    assert.match(fn, /showScreen\("config"\)/, "Analyze should return to manual configuration after prerender");
+});
+
+test("panel Apply Cuts runs FFmpeg silence detection before applying cuts", () => {
+    const main = readProjectFile("client/js/main.js");
+    const applyStart = main.indexOf("function applyCuts");
+    const prepareStart = main.indexOf("function prepareCutZonesFromCurrentConfig");
+    assert.notEqual(applyStart, -1, "applyCuts should exist");
+    assert.notEqual(prepareStart, -1, "prepareCutZonesFromCurrentConfig should exist");
+
+    const applyEnd = main.indexOf("\n    function beginApplyCancelMode", applyStart + 1);
+    const applyFn = main.slice(applyStart, applyEnd === -1 ? main.length : applyEnd);
+    const prepareEnd = main.indexOf("\n    function applyCutsInPlaceFromPanel", prepareStart + 1);
+    const prepareFn = main.slice(prepareStart, prepareEnd === -1 ? main.length : prepareEnd);
+
+    assert.match(applyFn, /prepareCutZonesFromCurrentConfig\(\)[\s\S]*applyCutsInPlaceFromPanel\(\)/, "Apply Cuts should prepare cut zones before invoking the host cutter");
+    assert.match(prepareFn, /analysisSession\.renderedMixPath/, "Apply-time detection should use the prerendered WAV saved by Analyze");
+    assert.match(prepareFn, /silenceDetector\.detectSilence\(analysisSession\.renderedMixPath,\s*threshold,\s*minDuration\)/, "Apply-time detection should run FFmpeg on the saved render with current config");
+    assert.match(prepareFn, /computeCleanCutZones\(/, "Apply-time detection should compute keep zones from the current screen three settings");
+});
+
+test("panel blocks repeated Apply Cuts clicks while FFmpeg is preparing cut zones", () => {
+    const main = readProjectFile("client/js/main.js");
+    const stateStart = main.indexOf("let isPreparingCuts");
+    const applyStart = main.indexOf("function applyCuts");
+    assert.notEqual(stateStart, -1, "panel should track Apply Cuts preparation separately from host cutting");
+    assert.notEqual(applyStart, -1, "applyCuts should exist");
+
+    const applyEnd = main.indexOf("\n    function beginApplyCancelMode", applyStart + 1);
+    const applyFn = main.slice(applyStart, applyEnd === -1 ? main.length : applyEnd);
+
+    assert.match(applyFn, /if \(isPreparingCuts\)[\s\S]*return/, "repeated clicks while FFmpeg is still running should be ignored");
+    assert.match(applyFn, /isPreparingCuts\s*=\s*true[\s\S]*prepareCutZonesFromCurrentConfig\(\)/, "preparation state should begin before FFmpeg detection starts");
+    assert.match(applyFn, /then\(function\(\) \{[\s\S]*isPreparingCuts\s*=\s*false[\s\S]*applyCutsInPlaceFromPanel\(\)/, "host cuts should start only after FFmpeg preparation resolves");
+    assert.match(applyFn, /catch\(function\(err\) \{[\s\S]*isPreparingCuts\s*=\s*false/, "failed FFmpeg preparation should clear the preparation state without applying cuts");
 });
 
 test("panel maps selected sequence clips into range-relative audio tracks", () => {
@@ -285,6 +321,20 @@ test("panel applies cut zones in cancellable chunks", () => {
     assert.doesNotMatch(fn, /runNextCutZone\(/, "panel should not schedule one evalScript per zone anymore");
 });
 
+test("panel keeps Apply Cuts chunks short and waits between chunks", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function applyCutsInPlaceFromPanel");
+    assert.notEqual(start, -1, "applyCutsInPlaceFromPanel should exist");
+
+    const end = main.indexOf("\n    // ── UI Helpers", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(main, /APPLY_CUTS_CHUNK_SIZE\s*=\s*8/, "chunks should stay below the observed 11-zone drift point");
+    assert.match(main, /APPLY_CUTS_CHUNK_SETTLE_DELAY_MS\s*=\s*250/, "panel should give Premiere time to settle between host calls");
+    assert.match(fn, /setTimeout\(function \(\) \{[\s\S]*runNextCutChunk\(index \+ 1/, "next chunk should be scheduled after a real delay");
+    assert.match(fn, /APPLY_CUTS_CHUNK_SETTLE_DELAY_MS/, "inter-chunk scheduling should use the settle delay constant");
+});
+
 test("host can load cut zones from a temp JSON file", () => {
     const host = readProjectFile("host/index.jsx");
     const start = host.indexOf("function applyCutsInPlaceFile");
@@ -338,7 +388,7 @@ test("panel logs Apply Cuts chunk timing summaries", () => {
     const start = main.indexOf("function applyCutsInPlaceFromPanel");
     assert.notEqual(start, -1, "applyCutsInPlaceFromPanel should exist");
 
-    const end = main.indexOf("\n    // â”€â”€ UI Helpers", start + 1);
+    const end = main.indexOf("\n    // ── UI Helpers", start + 1);
     const fn = main.slice(start, end === -1 ? main.length : end);
 
     assert.match(fn, /chunkStartedAt/, "panel should capture chunk start time");
@@ -358,7 +408,7 @@ test("panel persists Apply Cuts diagnostics to a temp log file", () => {
 
     const start = main.indexOf("function applyCutsInPlaceFromPanel");
     assert.notEqual(start, -1, "applyCutsInPlaceFromPanel should exist");
-    const end = main.indexOf("\n    // â”€â”€ UI Helpers", start + 1);
+    const end = main.indexOf("\n    // ── UI Helpers", start + 1);
     const fn = main.slice(start, end === -1 ? main.length : end);
 
     assert.match(fn, /writeApplyCutsLog\("chunk"/, "chunk diagnostics should be persisted");
@@ -554,12 +604,12 @@ test("panel exposes Full Sequence / In-Out range toggle", () => {
     assert.match(main, /getSelectedRangeMode\(/, "panel should read selected range mode");
 });
 
-test("panel Analyze validates In-Out range, renders that range, and offsets detected silence", () => {
+test("panel Analyze validates In-Out range and renders that range", () => {
     const main = readProjectFile("client/js/main.js");
     const start = main.indexOf("function runAnalysis");
     assert.notEqual(start, -1, "runAnalysis should exist");
 
-    const end = main.indexOf("\n    // ═", start + 1);
+    const end = main.indexOf("\n    //", start + 1);
     const fn = main.slice(start, end === -1 ? main.length : end);
 
     assert.match(fn, /getSelectedRangeMode\(/, "Analyze should read selected range mode");
@@ -567,15 +617,14 @@ test("panel Analyze validates In-Out range, renders that range, and offsets dete
     assert.match(fn, /Define In and Out|set In and Out/i, "invalid In-Out should fail clearly");
     assert.match(fn, /ensureSelectedTrackMixdown\(selectedIdx,\s*analysisRangeInfo,\s*presetMode\)/, "Analyze should render selected Premiere tracks for the active range");
     assert.match(fn, /workAreaType\s*=\s*1/, "In-Out Analyze should export with workAreaType=1");
-    assert.match(fn, /offsetIntervals(?:ForAnalysis)?\(/, "Analyze should offset FFmpeg intervals into sequence time");
 });
 
-test("panel computes In-Out keep zones in range-local time before applying sequence offset", () => {
+test("panel computes In-Out keep zones at apply time in range-local time before applying sequence offset", () => {
     const main = readProjectFile("client/js/main.js");
     const start = main.indexOf("function processDetectionResult");
     assert.notEqual(start, -1, "processDetectionResult should exist");
 
-    const end = main.indexOf("\n            }", start + 1);
+    const end = main.indexOf("\n    //", start + 1);
     const fn = main.slice(start, end === -1 ? main.length : end);
 
     assert.match(fn, /rawSilenceIntervals\s*=\s*result\.silenceIntervals\s*\|\|\s*\[\]/, "Analyze should keep FFmpeg intervals in local range time");
@@ -595,7 +644,7 @@ test("panel Analyze does not dereference cutZones namespace directly in In-Out r
     const start = main.indexOf("function runAnalysis");
     assert.notEqual(start, -1, "runAnalysis should exist");
 
-    const end = main.indexOf("\n    // â•", start + 1);
+    const end = main.indexOf("\n    function prepareCutZonesFromCurrentConfig", start + 1);
     const fn = main.slice(start, end === -1 ? main.length : end);
 
     assert.doesNotMatch(
@@ -605,15 +654,15 @@ test("panel Analyze does not dereference cutZones namespace directly in In-Out r
     );
 });
 
-test("panel Analyze uses sequence duration after Premiere-rendered detection", () => {
+test("panel Apply uses sequence duration after Premiere-rendered detection", () => {
     const main = readProjectFile("client/js/main.js");
-    const start = main.indexOf("function runAnalysis");
-    assert.notEqual(start, -1, "runAnalysis should exist");
+    const start = main.indexOf("function prepareCutZonesFromCurrentConfig");
+    assert.notEqual(start, -1, "prepareCutZonesFromCurrentConfig should exist");
 
-    const end = main.indexOf("\n    // ═", start + 1);
+    const end = main.indexOf("\n    //", start + 1);
     const fn = main.slice(start, end === -1 ? main.length : end);
 
-    assert.match(fn, /seqSettings\s*&&\s*seqSettings\.durationSeconds/, "Analyze should prefer full sequence duration");
+    assert.match(fn, /seqSettings\s*&&\s*seqSettings\.durationSeconds/, "Apply-time detection should prefer full sequence duration");
     assert.match(fn, /result\.mediaDuration\s*=\s*mediaDuration/, "result duration should be normalized before showResults and Apply Cuts");
 });
 
@@ -658,7 +707,7 @@ test("host applyCutsInPlace normalizes zones to ticks before razor and remove", 
     assert.match(fn, /_clipFullyInsideTicks\(/, "host should compare clip bounds against zone ticks");
 });
 
-test("host uses QE-specific timecode for drop-frame razor calls", () => {
+test("host keeps QE-specific absolute timecode as fallback", () => {
     const host = readProjectFile("host/index.jsx");
     const start = host.indexOf("function applyCutsInPlace");
     assert.notEqual(start, -1, "applyCutsInPlace should exist");
@@ -672,7 +721,17 @@ test("host uses QE-specific timecode for drop-frame razor calls", () => {
     assert.match(fn, /_zoneToDisplayTC/, "host diagnostics should still expose display timecode");
 });
 
-test("panel asks host to use display timecode for In-Out drop-frame razor", () => {
+test("host QE helper uses real NTSC timecode for non-drop sequences", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function _secondsToQeRazorTimecodeHost");
+    assert.notEqual(start, -1, "QE helper should exist");
+    const end = host.indexOf("\nfunction", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /if \(!isDropFrame\) return _secondsToTimecodeHost\(seconds,\s*fps,\s*isNTSC\)/, "non-drop should use real NTSC frame labels");
+});
+
+test("panel asks host to use display timecode for confirmed drop-frame razor", () => {
     const main = readProjectFile("client/js/main.js");
     const start = main.indexOf("function applyCutsInPlaceFromPanel");
     assert.notEqual(start, -1, "applyCutsInPlaceFromPanel should exist");
@@ -681,7 +740,7 @@ test("panel asks host to use display timecode for In-Out drop-frame razor", () =
     const fn = main.slice(start, end === -1 ? main.length : end);
 
     assert.match(fn, /qeTimecodeMode/, "Apply should send an explicit QE timecode mode");
-    assert.match(fn, /isDropFrame\s*&&\s*analysisRangeInfo\s*&&\s*analysisRangeInfo\.mode\s*===\s*"inout"\s*\?\s*"display"\s*:\s*"absolute"/, "In-Out should use display timecode only when the sequence is confirmed drop-frame");
+    assert.match(fn, /qeTimecodeMode:\s*isDropFrame\s*\?\s*"display"\s*:\s*"absolute"/, "confirmed drop-frame sequences should use display timecode for QE razor in every range");
 });
 
 test("host can switch drop-frame razor calls to display timecode", () => {
@@ -697,6 +756,20 @@ test("host can switch drop-frame razor calls to display timecode", () => {
     assert.match(fn, /_secondsToQeRazorTimecodeHost/, "absolute mode should keep the existing QE-specific helper");
 });
 
+test("host applyCutsInPlace confirms drop-frame display format at cut time", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function applyCutsInPlace");
+    assert.notEqual(start, -1, "applyCutsInPlace should exist");
+
+    const end = host.indexOf("\nfunction applyCutsInPlaceFile", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /seq\.getSettings\(\)/, "cut-time host path should inspect the active sequence settings");
+    assert.match(fn, /hostVideoDisplayFormat/, "cut-time diagnostics should expose the display format used by the host");
+    assert.match(fn, /hostVideoDisplayFormat\s*===\s*102[\s\S]*hostVideoDisplayFormat\s*===\s*106/, "host should recognize 29.97 and 59.94 drop-frame while cutting");
+    assert.match(fn, /qeTimecodeMode\s*=\s*"display"/, "host should force display timecode when the active sequence is confirmed drop-frame");
+});
+
 test("host does not assume NTSC sequences are drop-frame when display format is unavailable", () => {
     const host = readProjectFile("host/index.jsx");
     const start = host.indexOf("function getSequenceSettings");
@@ -706,6 +779,9 @@ test("host does not assume NTSC sequences are drop-frame when display format is 
     const fn = host.slice(start, end === -1 ? host.length : end);
 
     assert.match(fn, /videoDisplayFormat/, "host should inspect Premiere's display format when available");
+    assert.match(fn, /videoDisplayFormat\s*===\s*102/, "29.97 drop-frame display format should be recognized");
+    assert.match(fn, /videoDisplayFormat\s*===\s*106/, "59.94 drop-frame display format should be recognized");
+    assert.doesNotMatch(fn, /videoDisplayFormat\s*===\s*100/, "24 timecode must not be treated as drop-frame");
     assert.doesNotMatch(fn, /if \(!isDropFrame && isNTSC\)[\s\S]*isDropFrame\s*=\s*true/, "NTSC rate alone should not force drop-frame");
 });
 
@@ -722,3 +798,33 @@ test("host applyCutsInPlace filters opts.range using tick bounds", () => {
     assert.match(fn, /zEndTicks\s*<=\s*rangeStartTicks/, "host should skip zones before range by ticks");
     assert.match(fn, /zStartTicks\s*>=\s*rangeEndTicks/, "host should skip zones after range by ticks");
 });
+
+test("host tolerates four-frame QE razor residual drift after repeated ripples", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function applyCutsInPlace");
+    assert.notEqual(start, -1, "applyCutsInPlace should exist");
+
+    const end = host.indexOf("\nfunction applyCutsInPlaceFile", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /BOUNDARY_TOLERANCE_FRAMES\s*=\s*6/, "post-razor target matching should tolerate the observed 4-frame QE residual");
+    assert.match(fn, /INTERSECT_TOLERANCE_FRAMES\s*=\s*1\.5/, "preflight intersection should remain conservative");
+    assert.match(fn, /_clipMatchesRazorSegmentTicks\(/, "post-razor target matching should require both boundaries near the intended zone");
+    assert.match(fn, /_clipIntersectsTicks\([^)]*INTERSECT_TOLERANCE_FRAMES\)/, "preflight should use the narrower intersection tolerance");
+});
+
+test("host only deletes post-razor segments whose boundaries match the cut zone", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function applyCutsInPlace");
+    assert.notEqual(start, -1, "applyCutsInPlace should exist");
+
+    const end = host.indexOf("\nfunction applyCutsInPlaceFile", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /BOUNDARY_TOLERANCE_FRAMES\s*=\s*6/, "target matching should allow small QE residuals without accepting large offsets");
+    assert.match(fn, /_clipMatchesRazorSegmentTicks\(/, "post-razor target collection should require boundary matching");
+    assert.doesNotMatch(fn, /if \(cvInside\)[\s\S]*targets\.video\.push/, "video target collection should not accept a shifted subsegment as a valid delete");
+    assert.doesNotMatch(fn, /if \(caInside\)[\s\S]*targets\.audio\.push/, "audio target collection should not accept a shifted subsegment as a valid delete");
+    assert.match(fn, /boundaryMatch/, "diagnostics should show whether a candidate matched both razor boundaries");
+});
+

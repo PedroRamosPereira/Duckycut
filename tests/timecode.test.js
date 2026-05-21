@@ -46,7 +46,7 @@ test("DF 59.94 60fps: ~60.06s real -> 00:01:00;04 (4 frames dropped at minute 1)
     assert.equal(secondsToDropTimecode(3600 / 59.94, 59.94), "00:01:00;04");
 });
 
-test("QE razor timecode for 59.94 DF uses absolute frame labels from real log", () => {
+test("QE absolute fallback timecode for 59.94 DF stays available", () => {
     assert.equal(secondsToDropTimecode(1761.97688333333, 59.94), "00:29:22;01");
     assert.equal(secondsToQeRazorTimecode(1761.97688333333, 59.94, true, true), "00:29:20;13");
     assert.equal(secondsToQeRazorTimecode(1769.18408333333, 59.94, true, true), "00:29:27;25");

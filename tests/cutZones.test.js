@@ -6,6 +6,7 @@ const {
     offsetIntervals,
     intersectIntervalsWithRange,
     secondsToTimecode,
+    secondsToQeRazorTimecode,
     jsxStringArg,
     getProjectPathError,
 } = require("../client/js/cutZones.js");
@@ -64,6 +65,11 @@ test("secondsToTimecode: hours/minutes wrap correctly", () => {
 
 test("secondsToTimecode: zero seconds", () => {
     assert.equal(secondsToTimecode(0, 25, false), "00:00:00:00");
+});
+
+test("secondsToQeRazorTimecode: 59.94 non-drop uses NTSC real-frame labels", () => {
+    assert.equal(secondsToQeRazorTimecode(1803.85205, 59.94005994, false, true), "00:30:02:03");
+    assert.equal(secondsToQeRazorTimecode(1805.68721666667, 59.94005994, false, true), "00:30:03:53");
 });
 
 test("jsxStringArg: escapes backslashes, quotes, and apostrophes for evalScript string args", () => {

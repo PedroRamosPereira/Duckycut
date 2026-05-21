@@ -123,8 +123,8 @@ function _secondsToDropTimecodeHost(seconds, fps) {
     return pad(hh) + ":" + pad(mm) + ":" + pad(ss) + ";" + pad(ff);
 }
 
-// QE razor() on drop-frame timelines is most reliable with absolute frame
-// labels, while diagnostics can still show normal display drop-frame labels.
+// QE razor() receives a string label; the panel chooses whether that label
+// should be display timecode (confirmed drop-frame) or absolute/nominal.
 function _secondsToQeRazorTimecodeHost(seconds, fps, isDropFrame, isNTSC) {
     if (!fps || fps <= 0) fps = 30;
     if (!isDropFrame) return _secondsToTimecodeHost(seconds, fps, isNTSC);
@@ -703,8 +703,8 @@ function getSequenceSettings() {
         try { numVideoTracks = seq.videoTracks.numTracks; } catch(e) {}
 
         // ── Drop-frame detection ──────────────────────────────────
-        // PPro exposes drop-frame via videoDisplayFormat enum; values vary
-        // between versions. Known: TIMEDISPLAY_30Drop = 100, TIMEDISPLAY_60Drop = 102.
+        // PPro exposes drop-frame via videoDisplayFormat enum.
+        // Official sequence enums: 102 = 29.97 Drop, 106 = 59.94 Drop.
         // Do not infer DF from NTSC rate alone: 59.94 non-drop exists and QE
         // will treat DF display labels as absolute frame labels in that case.
         var isDropFrame = false;
@@ -713,8 +713,8 @@ function getSequenceSettings() {
             var settings2 = seq.getSettings();
             if (settings2 && typeof settings2.videoDisplayFormat === "number") {
                 videoDisplayFormat = settings2.videoDisplayFormat;
-                isDropFrame = (videoDisplayFormat === 100 ||
-                               videoDisplayFormat === 102);
+                isDropFrame = (videoDisplayFormat === 102 ||
+                               videoDisplayFormat === 106);
             }
         } catch (e) {}
 
@@ -821,6 +821,17 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         var isNTSC      = (typeof opts.isNTSC      === "boolean") ? opts.isNTSC      : false;
         var isDropFrame = (typeof opts.isDropFrame === "boolean") ? opts.isDropFrame : false;
         var qeTimecodeMode = (opts.qeTimecodeMode === "display") ? "display" : "absolute";
+        var hostVideoDisplayFormat = null;
+        try {
+            var cutSettings = seq.getSettings();
+            if (cutSettings && typeof cutSettings.videoDisplayFormat === "number") {
+                hostVideoDisplayFormat = cutSettings.videoDisplayFormat;
+                if (hostVideoDisplayFormat === 102 || hostVideoDisplayFormat === 106) {
+                    isDropFrame = true;
+                    qeTimecodeMode = "display";
+                }
+            }
+        } catch (eCutSettings) {}
         if (!zones.length) return '{"success":true,"applied":0,"skipped":0}';
 
         zones.sort(function (a, b) {
@@ -838,10 +849,14 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         var applied = 0, skipped = 0;
         var diag = [];
         var zoneDiagnostics = [];
+        var INTERSECT_TOLERANCE_FRAMES = 1.5;
+        var CONTAINED_TOLERANCE_FRAMES = 4.5;
+        var BOUNDARY_TOLERANCE_FRAMES = 6;
+        diag.push("hostVideoDisplayFormat=" + (hostVideoDisplayFormat === null ? "null" : hostVideoDisplayFormat));
 
-        // razor() receives sequence timecode relative to seq.zeroPoint.
-        // Drop-frame display labels are kept separately for diagnostics because
-        // QE razor() cuts on absolute frame labels in long DF timelines.
+        // razor() receives sequence timecode relative to seq.zeroPoint. The
+        // panel selects display labels for confirmed DF and absolute/nominal
+        // labels for non-DF or unknown formats.
         // _parseZeroPoint handles string ticks, number ticks, and PPro 14+ Time
         // objects (where Number(timeObj) returns NaN — the prior bug).
         var zpRaw  = null;
@@ -882,7 +897,7 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
             return { video: video, audio: audio, total: video + audio };
         }
 
-        function _pushCandidate(zoneDiag, kind, trackIndex, clipIndex, startSec, endSec, inside) {
+        function _pushCandidate(zoneDiag, kind, trackIndex, clipIndex, startSec, endSec, inside, boundaryMatch) {
             if (!zoneDiag) return;
             if (zoneDiag.candidateClips.length >= 12) return;
             var tol = (fps && fps > 0) ? (3 / fps) : 0.1;
@@ -897,7 +912,8 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                 end: endSec,
                 frameDeltaStart: (startSec - zoneDiag.zStart) * frameRate,
                 frameDeltaEnd: (endSec - zoneDiag.zEnd) * frameRate,
-                inside: inside
+                inside: inside,
+                boundaryMatch: boundaryMatch === true
             });
         }
 
@@ -956,16 +972,23 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
             };
         }
 
-        function _clipFullyInsideTicks(clipStartTicks, clipEndTicks, zoneStartTicks, zoneEndTicks, fps) {
+        function _clipFullyInsideTicks(clipStartTicks, clipEndTicks, zoneStartTicks, zoneEndTicks, fps, toleranceFrames) {
             var frameTicks = (fps && fps > 0) ? Math.round(TICKS / fps) : Math.round(TICKS / 30);
-            var tolTicks = Math.round(frameTicks * 1.5);
+            var tolTicks = Math.round(frameTicks * toleranceFrames);
             return (clipStartTicks >= zoneStartTicks - tolTicks) &&
                    (clipEndTicks   <= zoneEndTicks   + tolTicks);
         }
 
-        function _clipIntersectsTicks(clipStartTicks, clipEndTicks, zoneStartTicks, zoneEndTicks, fps) {
+        function _clipMatchesRazorSegmentTicks(clipStartTicks, clipEndTicks, zoneStartTicks, zoneEndTicks, fps) {
             var frameTicks = (fps && fps > 0) ? Math.round(TICKS / fps) : Math.round(TICKS / 30);
-            var tolTicks = Math.round(frameTicks * 1.5);
+            var tolTicks = Math.round(frameTicks * BOUNDARY_TOLERANCE_FRAMES);
+            return (Math.abs(clipStartTicks - zoneStartTicks) <= tolTicks) &&
+                   (Math.abs(clipEndTicks - zoneEndTicks) <= tolTicks);
+        }
+
+        function _clipIntersectsTicks(clipStartTicks, clipEndTicks, zoneStartTicks, zoneEndTicks, fps, toleranceFrames) {
+            var frameTicks = (fps && fps > 0) ? Math.round(TICKS / fps) : Math.round(TICKS / 30);
+            var tolTicks = Math.round(frameTicks * toleranceFrames);
             return (clipEndTicks > zoneStartTicks - tolTicks) &&
                    (clipStartTicks < zoneEndTicks + tolTicks);
         }
@@ -981,10 +1004,10 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                             if (!pvClip) continue;
                             var pvs = _timeToTicksPreferTicks(pvClip.start);
                             var pve = _timeToTicksPreferTicks(pvClip.end);
-                            if (_clipIntersectsTicks(pvs, pve, zoneStartTicks, zoneEndTicks, fps)) {
+                            if (_clipIntersectsTicks(pvs, pve, zoneStartTicks, zoneEndTicks, fps, INTERSECT_TOLERANCE_FRAMES)) {
                                 targets.video++;
                                 targets.total++;
-                                if (zoneDiag) _pushCandidate(zoneDiag, "video", pvt, pvci, _ticksToSeconds(pvs), _ticksToSeconds(pve), false);
+                                if (zoneDiag) _pushCandidate(zoneDiag, "video", pvt, pvci, _ticksToSeconds(pvs), _ticksToSeconds(pve), false, false);
                             }
                         } catch (ePV) {}
                     }
@@ -999,10 +1022,10 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                             if (!paClip) continue;
                             var pas = _timeToTicksPreferTicks(paClip.start);
                             var pae = _timeToTicksPreferTicks(paClip.end);
-                            if (_clipIntersectsTicks(pas, pae, zoneStartTicks, zoneEndTicks, fps)) {
+                            if (_clipIntersectsTicks(pas, pae, zoneStartTicks, zoneEndTicks, fps, INTERSECT_TOLERANCE_FRAMES)) {
                                 targets.audio++;
                                 targets.total++;
-                                if (zoneDiag) _pushCandidate(zoneDiag, "audio", pat, paci, _ticksToSeconds(pas), _ticksToSeconds(pae), false);
+                                if (zoneDiag) _pushCandidate(zoneDiag, "audio", pat, paci, _ticksToSeconds(pas), _ticksToSeconds(pae), false, false);
                             }
                         } catch (ePA) {}
                     }
@@ -1022,9 +1045,10 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                             if (!cvClip) continue;
                             var cvs = _timeToTicksPreferTicks(cvClip.start);
                             var cve = _timeToTicksPreferTicks(cvClip.end);
-                            var cvInside = _clipFullyInsideTicks(cvs, cve, zoneStartTicks, zoneEndTicks, fps);
-                            _pushCandidate(zoneDiag, "video", cvt, cvci, _ticksToSeconds(cvs), _ticksToSeconds(cve), cvInside);
-                            if (cvInside) {
+                            var cvInside = _clipFullyInsideTicks(cvs, cve, zoneStartTicks, zoneEndTicks, fps, CONTAINED_TOLERANCE_FRAMES);
+                            var cvBoundaryMatch = _clipMatchesRazorSegmentTicks(cvs, cve, zoneStartTicks, zoneEndTicks, fps);
+                            _pushCandidate(zoneDiag, "video", cvt, cvci, _ticksToSeconds(cvs), _ticksToSeconds(cve), cvInside, cvBoundaryMatch);
+                            if (cvBoundaryMatch) {
                                 targets.video.push(cvClip);
                                 targets.total++;
                             }
@@ -1041,9 +1065,10 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
                             if (!caClip) continue;
                             var cas = _timeToTicksPreferTicks(caClip.start);
                             var cae = _timeToTicksPreferTicks(caClip.end);
-                            var caInside = _clipFullyInsideTicks(cas, cae, zoneStartTicks, zoneEndTicks, fps);
-                            _pushCandidate(zoneDiag, "audio", cat, caci, _ticksToSeconds(cas), _ticksToSeconds(cae), caInside);
-                            if (caInside) {
+                            var caInside = _clipFullyInsideTicks(cas, cae, zoneStartTicks, zoneEndTicks, fps, CONTAINED_TOLERANCE_FRAMES);
+                            var caBoundaryMatch = _clipMatchesRazorSegmentTicks(cas, cae, zoneStartTicks, zoneEndTicks, fps);
+                            _pushCandidate(zoneDiag, "audio", cat, caci, _ticksToSeconds(cas), _ticksToSeconds(cae), caInside, caBoundaryMatch);
+                            if (caBoundaryMatch) {
                                 targets.audio.push(caClip);
                                 targets.total++;
                             }

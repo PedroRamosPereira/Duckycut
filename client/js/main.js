@@ -15,7 +15,8 @@
     "use strict";
 
     const csInterface = new CSInterface();
-    const APPLY_CUTS_CHUNK_SIZE = 50;
+    const APPLY_CUTS_CHUNK_SIZE = 8;
+    const APPLY_CUTS_CHUNK_SETTLE_DELAY_MS = 250;
 
     let silenceDetector = null;
     let nodeRequire     = null;
@@ -117,6 +118,7 @@
     let probeResult     = null;   // { meanVolume, maxVolume, channelCount }
     let seqSettings     = null;   // from getSequenceSettings()
     let paddingLinked   = false;  // whether Padding In/Out are synced
+    let isPreparingCuts = false;
     let isApplyingCuts  = false;
     let applyCancelRequested = false;
     let analysisRangeMode = "full";
@@ -739,8 +741,6 @@
 
             updateProgress(10, "Preparing audio for analysis...");
 
-            var threshold   = computeThreshold(elAggressiveness.value);
-            var minDuration = parseInt(elMinDuration.value, 10) / 1000;
             var presetMode = elReducedPrerender.checked ? "reduced" : "default";
 
             var selectedAudioTracks = buildSelectedAudioTracksForDetection(selectedIdx, sequenceClips, analysisRangeInfo);
@@ -754,59 +754,77 @@
             ensureSelectedTrackMixdown(selectedIdx, analysisRangeInfo, presetMode)
                 .then(function(renderedMixPath) {
                     analysisSession.renderedMixPath = renderedMixPath;
-                    updateProgress(45, "Running FFmpeg silence detection on Premiere render...");
-                    return silenceDetector.detectSilence(renderedMixPath, threshold, minDuration);
-                })
-                .then(function(result) {
-                    processDetectionResult(result);
+                    analysisResult = null;
+                    keepZones = null;
+                    updateProgress(100, "Prerender complete!");
+                    setStatus("Prerender complete - adjust settings and apply cuts", "success");
+                    showScreen("config");
+                    hideProgress(); elBtnAnalyze.disabled = false;
                 })
                 .catch(function(err) {
-                    setStatus("Analysis error: " + (err.message || "unknown"), "error");
+                    setStatus("Prerender error: " + (err.message || "unknown"), "error");
                     hideProgress(); elBtnAnalyze.disabled = false;
                 });
-
-            function processDetectionResult(result) {
-                updateProgress(80, "Applying cut algorithm...");
-
-                var rawSilenceIntervals = result.silenceIntervals || [];
-                var silenceIntervals = rawSilenceIntervals;
-                var mediaDuration = seqSettings && seqSettings.durationSeconds
-                    ? seqSettings.durationSeconds
-                    : result.mediaDuration;
-                var analysisWindowDuration = mediaDuration;
-                if (analysisRangeInfo && analysisRangeInfo.mode === "inout") {
-                    analysisWindowDuration = analysisRangeInfo.durationSeconds;
-                }
-                result.mediaDuration = mediaDuration;
-                analysisResult = result;
-
-                var computedKeepZones = computeCleanCutZones(
-                    rawSilenceIntervals,
-                    analysisWindowDuration,
-                    {
-                        paddingIn:       parseInt(elPaddingIn.value, 10)       / 1000,
-                        paddingOut:      parseInt(elPaddingOut.value, 10)      / 1000,
-                        minClipDuration: parseInt(elMinClipDuration.value, 10) / 1000,
-                        minGapDuration:  parseInt(elMinGapFill.value, 10)      / 1000,
-                    }
-                );
-
-                if (analysisRangeInfo && analysisRangeInfo.mode === "inout") {
-                    silenceIntervals = offsetIntervalsForAnalysis(rawSilenceIntervals, analysisRangeInfo.startSeconds);
-                    keepZones = offsetIntervalsForAnalysis(computedKeepZones, analysisRangeInfo.startSeconds);
-                } else {
-                    silenceIntervals = rawSilenceIntervals;
-                    keepZones = computedKeepZones;
-                }
-                result.silenceIntervals = silenceIntervals;
-
-                updateProgress(100, "Analysis complete!");
-                showResults(result, keepZones, true);
-                setStatus("Analysis complete - threshold: " + threshold + " dB (Premiere audio mix)", "success");
-                showScreen("config");
-                hideProgress(); elBtnAnalyze.disabled = false;
-            }
         });
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    function prepareCutZonesFromCurrentConfig() {
+        if (!silenceDetector || !silenceDetector.detectSilence) {
+            return Promise.reject(new Error("Silence detector not loaded"));
+        }
+        if (!analysisSession || !analysisSession.renderedMixPath) {
+            return Promise.reject(new Error("Prerendered audio is not available"));
+        }
+
+        var threshold = computeThreshold(elAggressiveness.value);
+        var minDuration = parseInt(elMinDuration.value, 10) / 1000;
+        updateProgress(15, "Running FFmpeg silence detection on saved render...");
+
+        return silenceDetector.detectSilence(analysisSession.renderedMixPath, threshold, minDuration)
+            .then(function(result) {
+                return processDetectionResult(result, threshold);
+            });
+    }
+
+    function processDetectionResult(result, threshold) {
+        updateProgress(30, "Applying cut algorithm...");
+
+        var rawSilenceIntervals = result.silenceIntervals || [];
+        var silenceIntervals = rawSilenceIntervals;
+        var mediaDuration = seqSettings && seqSettings.durationSeconds
+            ? seqSettings.durationSeconds
+            : result.mediaDuration;
+        var analysisWindowDuration = mediaDuration;
+        if (analysisRangeInfo && analysisRangeInfo.mode === "inout") {
+            analysisWindowDuration = analysisRangeInfo.durationSeconds;
+        }
+        result.mediaDuration = mediaDuration;
+        analysisResult = result;
+
+        var computedKeepZones = computeCleanCutZones(
+            rawSilenceIntervals,
+            analysisWindowDuration,
+            {
+                paddingIn:       parseInt(elPaddingIn.value, 10)       / 1000,
+                paddingOut:      parseInt(elPaddingOut.value, 10)      / 1000,
+                minClipDuration: parseInt(elMinClipDuration.value, 10) / 1000,
+                minGapDuration:  parseInt(elMinGapFill.value, 10)      / 1000,
+            }
+        );
+
+        if (analysisRangeInfo && analysisRangeInfo.mode === "inout") {
+            silenceIntervals = offsetIntervalsForAnalysis(rawSilenceIntervals, analysisRangeInfo.startSeconds);
+            keepZones = offsetIntervalsForAnalysis(computedKeepZones, analysisRangeInfo.startSeconds);
+        } else {
+            silenceIntervals = rawSilenceIntervals;
+            keepZones = computedKeepZones;
+        }
+        result.silenceIntervals = silenceIntervals;
+
+        showResults(result, keepZones, true);
+        setStatus("Analysis complete - threshold: " + threshold + " dB (Premiere audio mix)", "success");
+        return keepZones;
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -950,10 +968,28 @@
             cancelApplyCutsFromPanel();
             return;
         }
-        if (!keepZones || keepZones.length === 0) {
-            setStatus("No keep zones — run analysis first", "error"); return;
+        if (isPreparingCuts) {
+            return;
         }
-        return applyCutsInPlaceFromPanel();
+        if (!analysisSession || !analysisSession.renderedMixPath) {
+            setStatus("Run analysis before applying cuts", "error"); return;
+        }
+        isPreparingCuts = true;
+        elBtnApply.disabled = true;
+        showScreen("apply");
+        showProgress("Preparing cut zones...");
+        return prepareCutZonesFromCurrentConfig()
+            .then(function() {
+                isPreparingCuts = false;
+                return applyCutsInPlaceFromPanel();
+            })
+            .catch(function(err) {
+                isPreparingCuts = false;
+                setStatus("Apply error: " + (err.message || "unknown"), "error");
+                hideProgress();
+                endApplyCancelMode();
+                showScreen("config");
+            });
     }
 
     function beginApplyCancelMode() {
@@ -1068,7 +1104,7 @@
             isNTSC: isNTSC,
             isDropFrame: isDropFrame,
             tickMode: true,
-            qeTimecodeMode: isDropFrame && analysisRangeInfo && analysisRangeInfo.mode === "inout" ? "display" : "absolute",
+            qeTimecodeMode: isDropFrame ? "display" : "absolute",
             range: analysisRangeInfo && analysisRangeInfo.mode === "inout" ? {
                 startSeconds: analysisRangeInfo.startSeconds,
                 endSeconds: analysisRangeInfo.endSeconds
@@ -1171,7 +1207,7 @@
 
                     setTimeout(function () {
                         runNextCutChunk(index + 1, appliedCount + (data.applied || 0), skippedCount + (data.skipped || 0));
-                    }, 0);
+                    }, APPLY_CUTS_CHUNK_SETTLE_DELAY_MS);
                 })
                 .catch(function (err) {
                     var logPath = writeApplyCutsLog("eval-error", {
@@ -1213,3 +1249,4 @@
 
     init();
 })();
+

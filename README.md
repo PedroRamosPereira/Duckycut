@@ -22,10 +22,11 @@ No Windows, habilite extensoes CEP sem assinatura criando `PlayerDebugMode=1` em
 1. Abra uma sequencia no Premiere.
 2. Selecione as tracks de audio que entram na analise.
 3. Clique `Auto Detect` para calibrar volume.
-4. Clique `Analyze` para renderizar um WAV pelo Premiere e detectar silencios sobre o mix audivel.
-5. Clique `Apply Cuts` para aplicar os cortes in-place quando `Delete Silence` estiver ativo.
+4. Clique `Analyze` para renderizar um WAV pelo Premiere.
+5. Ajuste as configuracoes manuais na tela seguinte.
+6. Clique `Apply Cuts`; nesse momento o FFmpeg detecta silencios com a configuracao atual e, em seguida, aplica os cortes in-place.
 
-O `Analyze` usa `exportAsMediaDirect()` como caminho principal: antes do render, o host tenta mutar as tracks nao selecionadas e desmutar as selecionadas; depois sempre restaura os mutes originais. Em `Full Sequence`, o export usa `workAreaType=0`. Em `Range: In-Out`, usa `workAreaType=1` e o painel soma o offset do In aos intervalos detectados.
+O `Analyze` usa `exportAsMediaDirect()` como caminho principal: antes do render, o host tenta mutar as tracks nao selecionadas e desmutar as selecionadas; depois sempre restaura os mutes originais. Em `Full Sequence`, o export usa `workAreaType=0`. Em `Range: In-Out`, usa `workAreaType=1`. O `silencedetect` roda depois, no clique de `Apply Cuts`, usando o WAV ja renderizado e os sliders atuais.
 
 ## Testes
 

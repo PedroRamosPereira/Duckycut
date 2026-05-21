@@ -36,6 +36,96 @@ test("panel exposes a reduced prerender checkbox", () => {
     assert.match(html, /Reduced prerender/i, "checkbox should be labelled as reduced prerender");
 });
 
+test("panel separates the workflow into five screens", () => {
+    const html = readProjectFile("client/index.html");
+    const main = readProjectFile("client/js/main.js");
+
+    assert.match(html, /id="screenStart"/, "screen 1 should exist");
+    assert.match(html, /id="screenPrerender"/, "screen 2 should exist");
+    assert.match(html, /id="screenConfig"/, "screen 3 provisional config should exist");
+    assert.match(html, /id="screenApply"/, "screen 4 apply progress should exist");
+    assert.match(html, /id="screenDone"/, "screen 5 completion should exist");
+    assert.match(main, /function showScreen\(/, "panel should have a screen navigation helper");
+    assert.match(main, /showScreen\("start"\)/, "panel should be able to return to the first screen");
+});
+
+test("panel keeps manual controls on screen three and applies cuts from there", () => {
+    const html = readProjectFile("client/index.html");
+
+    const start = html.indexOf('id="screenConfig"');
+    assert.notEqual(start, -1, "screen three should exist");
+    const end = html.indexOf('id="screenApply"', start);
+    const screen = html.slice(start, end === -1 ? html.length : end);
+
+    assert.match(screen, /id="aggressiveness"/, "screen three should keep aggressiveness");
+    assert.match(screen, /id="minDuration"/, "screen three should keep min silence");
+    assert.match(screen, /id="paddingIn"/, "screen three should keep padding in");
+    assert.match(screen, /id="paddingOut"/, "screen three should keep padding out");
+    assert.match(screen, /id="minClipDuration"/, "screen three should keep advanced min clip duration");
+    assert.match(screen, /id="minGapFill"/, "screen three should keep advanced min gap");
+    assert.match(screen, /id="btnApply"/, "screen three should expose the apply cuts button");
+    assert.match(screen, /id="btnCancelConfig"/, "screen three should expose a return/cancel button");
+});
+
+test("panel removes optional delete silence UI and keeps applying cuts enabled", () => {
+    const html = readProjectFile("client/index.html");
+    const main = readProjectFile("client/js/main.js");
+
+    assert.doesNotMatch(html, /id="deleteSilence"/, "Delete Silence should not be a user-facing checkbox");
+    assert.doesNotMatch(main, /elDeleteSilence/, "panel should not depend on a Delete Silence DOM element");
+    assert.doesNotMatch(main, /deleteSilence:/, "presets should not store Delete Silence");
+    assert.doesNotMatch(main, /elBtnApply\.style\.display\s*=\s*elDeleteSilence\.checked/, "Apply button should always be available after analysis");
+});
+
+test("panel hides empty audio tracks in the selector", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function populateTrackCheckboxes");
+    assert.notEqual(start, -1, "populateTrackCheckboxes should exist");
+
+    const end = main.indexOf("\n    //", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /filter\(function\(t\)[\s\S]*t\.clipCount\s*>\s*0/, "track list should filter out empty tracks");
+    assert.doesNotMatch(fn, /\(empty\)/, "empty tracks should not be rendered with an empty label");
+});
+
+test("panel keeps rendered WAV until the user leaves the analysis session", () => {
+    const main = readProjectFile("client/js/main.js");
+    const runStart = main.indexOf("function runAnalysis");
+    assert.notEqual(runStart, -1, "runAnalysis should exist");
+    const runEnd = main.indexOf("\n    //", runStart + 1);
+    const runFn = main.slice(runStart, runEnd === -1 ? main.length : runEnd);
+
+    assert.match(main, /analysisSession/, "panel should keep temporary analysis session state");
+    assert.match(main, /function cleanupAnalysisSession\(/, "panel should centralize cleanup of session temp files");
+    assert.doesNotMatch(runFn, /unlinkSync\(renderedMixPath\)/, "Analyze should not delete the rendered WAV immediately after detectSilence");
+    assert.match(runFn, /analysisSession\.renderedMixPath\s*=\s*renderedMixPath/, "Analyze should remember the rendered WAV path");
+});
+
+test("panel deletes rendered WAV only when Apply Cuts completes or is cancelled", () => {
+    const main = readProjectFile("client/js/main.js");
+    const returnStart = main.indexOf("function returnToStart");
+    const applyStart = main.indexOf("function applyCutsInPlaceFromPanel");
+    const runStart = main.indexOf("function runAnalysis");
+    assert.notEqual(returnStart, -1, "returnToStart should exist");
+    assert.notEqual(applyStart, -1, "applyCutsInPlaceFromPanel should exist");
+    assert.notEqual(runStart, -1, "runAnalysis should exist");
+
+    const returnFnEnd = main.indexOf("\n    function bindSliders", returnStart + 1);
+    const returnFn = main.slice(returnStart, returnFnEnd === -1 ? main.length : returnFnEnd);
+    const applyFnEnd = main.indexOf("\n    //", applyStart + 1);
+    const applyFn = main.slice(applyStart, applyFnEnd === -1 ? main.length : applyFnEnd);
+    const runFnEnd = main.indexOf("\n    //", runStart + 1);
+    const runFn = main.slice(runStart, runFnEnd === -1 ? main.length : runFnEnd);
+
+    const cleanupCalls = main.match(/cleanupAnalysisSession\(\);/g) || [];
+    assert.equal(cleanupCalls.length, 2, "cleanup should have exactly two approved call sites");
+    assert.doesNotMatch(runFn, /cleanupAnalysisSession\(\);/, "analysis should not delete the rendered WAV");
+    assert.doesNotMatch(returnFn, /cleanupAnalysisSession\(\);/, "returning to the start should not delete the rendered WAV under the Apply Cuts lifecycle rule");
+    assert.match(applyFn, /function finishCancelled[\s\S]*cleanupAnalysisSession\(\);/, "cancelled Apply Cuts should delete the rendered WAV");
+    assert.match(applyFn, /if \(index >= cutChunks\.length\)[\s\S]*cleanupAnalysisSession\(\);[\s\S]*showScreen\("done"\)/, "completed Apply Cuts should delete the rendered WAV");
+});
+
 test("panel passes reduced prerender mode into Premiere export", () => {
     const main = readProjectFile("client/js/main.js");
     const mixdownStart = main.indexOf("function ensureSelectedTrackMixdown");

@@ -7,238 +7,171 @@
 </head>
 <body>
     <div id="panel">
-
-        <!-- Header -->
         <div class="header">
-            <span class="header-icon">🦆</span>
             <h1>Duckycut</h1>
-            <span class="header-tag">Clean Cut</span>
         </div>
 
-        <!-- Active Sequence -->
-        <div class="section">
-            <label class="section-label">ACTIVE SEQUENCE</label>
-            <div class="sequence-row">
-                <span id="sequenceName" class="sequence-name">No sequence</span>
-                <button id="btnRefreshSeq" class="icon-btn" title="Refresh sequence">&#x21bb;</button>
-            </div>
-        </div>
+        <main class="screens">
+            <section id="screenStart" class="screen" data-screen="start">
+                <div class="section">
+                    <label class="section-label">ACTIVE SEQUENCE</label>
+                    <div class="sequence-row">
+                        <span id="sequenceName" class="sequence-name">No sequence</span>
+                        <button id="btnRefreshSeq" class="icon-btn" title="Refresh sequence">&#x21bb;</button>
+                    </div>
+                </div>
 
-        <!-- Volume Detection -->
-        <div class="section">
-            <label class="section-label">SPEECH VOLUME</label>
-            <div class="probe-row">
-                <div id="volumeDisplay" class="volume-display">
-                    <span id="volumeIdle" class="vol-idle">Run Auto-Detect to calibrate</span>
-                    <div id="volumeStats" class="vol-stats" style="display:none;">
-                        <div class="vol-stat">
-                            <span class="vol-label">Mean</span>
-                            <span id="volMean" class="vol-value">—</span>
+                <div class="section">
+                    <label class="section-label">MODO DE DETECCAO</label>
+                    <div class="segmented-control" role="radiogroup" aria-label="Modo de deteccao">
+                        <label class="segment-option">
+                            <input type="radio" name="detectionMode" value="vad">
+                            <span>Deteccao automatica - VAD (WIP)</span>
+                        </label>
+                        <label class="segment-option">
+                            <input type="radio" name="detectionMode" value="manual" checked>
+                            <span>Modo manual</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <label class="section-label">RANGE</label>
+                    <div class="segmented-control" role="radiogroup" aria-label="Analysis range">
+                        <label class="segment-option">
+                            <input type="radio" name="rangeMode" value="full" checked>
+                            <span>Full Sequence</span>
+                        </label>
+                        <label class="segment-option">
+                            <input type="radio" name="rangeMode" value="inout">
+                            <span>In-Out</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <label class="section-label">SELECIONAR TRACKS</label>
+                    <div id="trackList" class="track-list">
+                        <span class="track-list-empty">Load a sequence to see tracks</span>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <div class="setting-row setting-row-inline">
+                        <label for="reducedPrerender">Reduced prerender</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="reducedPrerender">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <button id="btnAnalyze" class="btn-primary">Analisar</button>
+            </section>
+
+            <section id="screenPrerender" class="screen" data-screen="prerender" style="display:none;">
+                <div class="loading-panel">
+                    <h2>Preparando audio</h2>
+                    <p>Aguarde enquanto o WAV temporario e gerado.</p>
+                </div>
+            </section>
+
+            <section id="screenConfig" class="screen" data-screen="config" style="display:none;">
+                <div class="section">
+                    <label class="section-label">CONFIGURACAO MANUAL</label>
+
+                    <div class="setting-row">
+                        <label>Aggressiveness</label>
+                        <div class="slider-group">
+                            <input type="range" id="aggressiveness" min="0" max="100" value="50" step="1">
+                            <span id="aggressivenessVal" class="setting-value">50</span>
                         </div>
-                        <div class="vol-separator"></div>
-                        <div class="vol-stat">
-                            <span class="vol-label">Peak</span>
-                            <span id="volMax" class="vol-value">—</span>
-                        </div>
-                        <div class="vol-separator"></div>
-                        <div class="vol-stat">
-                            <span class="vol-label">Channels</span>
-                            <span id="volChannels" class="vol-value">—</span>
+                        <div id="aggroDescription" class="aggro-desc">Threshold: <span id="aggroThresholdHint">-</span></div>
+                    </div>
+
+                    <div class="setting-row">
+                        <label>Min Silence to Cut (ms)</label>
+                        <div class="slider-group">
+                            <input type="range" id="minDuration" min="100" max="3000" value="750" step="10">
+                            <span id="minDurationVal" class="setting-value">750 ms</span>
                         </div>
                     </div>
                 </div>
-                <button id="btnProbe" class="btn-probe" title="Detect speech volume">
-                    Auto Detect
-                </button>
-            </div>
-        </div>
 
-        <!-- Cut Settings -->
-        <div class="section">
-            <label class="section-label">CUT SETTINGS</label>
+                <div class="section">
+                    <label class="section-label">PADDING</label>
+                    <div class="padding-link-group">
+                        <div class="padding-rows">
+                            <div class="setting-row">
+                                <label>Padding In (ms)</label>
+                                <div class="slider-group">
+                                    <input type="range" id="paddingIn" min="0" max="500" value="50" step="10">
+                                    <span id="paddingInVal" class="setting-value">50 ms</span>
+                                </div>
+                            </div>
 
-            <!-- Aggressiveness -->
-            <div class="setting-row">
-                <div class="aggro-label-row">
-                    <label>Aggressiveness</label>
-                    <div class="aggro-scale">
-                        <span class="aggro-hint-left">Gentle</span>
-                        <span class="aggro-hint-right">Aggressive</span>
+                            <div class="setting-row">
+                                <label>Padding Out (ms)</label>
+                                <div class="slider-group">
+                                    <input type="range" id="paddingOut" min="0" max="500" value="150" step="10">
+                                    <span id="paddingOutVal" class="setting-value">150 ms</span>
+                                </div>
+                            </div>
+                        </div>
+                        <button id="btnLinkPadding" class="btn-link-padding" type="button" title="Link padding values" aria-label="Link padding">Link</button>
                     </div>
-                </div>
-                <div class="slider-group">
-                    <input type="range" id="aggressiveness" min="0" max="100" value="50" step="1" class="slider-aggro">
-                    <span id="aggressivenessVal" class="setting-value aggro-val">50</span>
-                </div>
-                <div id="aggroDescription" class="aggro-desc">Threshold: <span id="aggroThresholdHint">–</span></div>
-            </div>
 
-            <!-- Min Cut Duration -->
-            <div class="setting-row">
-                <label>
-                    Min Silence to Cut (ms)
-                    <span class="param-hint">silence shorter than this is ignored</span>
-                </label>
-                <div class="slider-group">
-                    <input type="range" id="minDuration" min="100" max="3000" value="750" step="10">
-                    <span id="minDurationVal" class="setting-value">750 ms</span>
-                </div>
-            </div>
-        </div>
+                    <button id="btnAdvancedToggle" class="btn-secondary" type="button">Advanced settings</button>
 
-        <!-- Clean Cut Refinement -->
-        <div class="section">
-            <label class="section-label">
-                ✂️ CLEAN CUT
-                <span class="section-hint">boundary refinement</span>
-            </label>
-
-            <div class="cleancut-grid">
-                <div class="padding-link-group">
-                    <div class="padding-rows">
-                        <div class="setting-row">
-                            <label>
-                                Padding In (ms)
-                                <span class="param-hint">lead-in before speech</span>
-                            </label>
-                            <div class="slider-group">
-                                <input type="range" id="paddingIn" min="0" max="500" value="50" step="10">
-                                <span id="paddingInVal" class="setting-value">50 ms</span>
+                    <div id="advancedSettings" class="advanced-settings">
+                        <div class="advanced-inner">
+                            <div class="setting-row">
+                                <label>Min Clip Duration (ms)</label>
+                                <div class="slider-group">
+                                    <input type="range" id="minClipDuration" min="100" max="2000" value="500" step="50">
+                                    <span id="minClipVal" class="setting-value">500 ms</span>
+                                </div>
                             </div>
-                        </div>
 
-                        <div class="setting-row">
-                            <label>
-                                Padding Out (ms)
-                                <span class="param-hint">lead-out after speech</span>
-                            </label>
-                            <div class="slider-group">
-                                <input type="range" id="paddingOut" min="0" max="500" value="150" step="10">
-                                <span id="paddingOutVal" class="setting-value">150 ms</span>
-                            </div>
-                        </div>
-                    </div>
-                    <button id="btnLinkPadding" class="btn-link-padding" type="button" title="Link padding values" aria-label="Link padding">
-                        <span class="link-bracket"></span>
-                        <span class="link-icon-wrap">
-                            <svg class="link-icon-svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M9 17H7A5 5 0 0 1 7 7h2"/>
-                                <path d="M15 7h2a5 5 0 1 1 0 10h-2"/>
-                                <line x1="8" y1="12" x2="16" y2="12"/>
-                            </svg>
-                        </span>
-                    </button>
-                </div>
-
-                <button id="btnAdvancedToggle" class="btn-advanced-toggle" type="button">
-                    <svg class="advanced-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
-                    Advanced settings
-                </button>
-
-                <div id="advancedSettings" class="advanced-settings">
-                    <div class="advanced-inner">
-                        <div class="setting-row">
-                            <label>
-                                Min Clip Duration (ms)
-                                <span class="param-hint">drop speech segments shorter than this</span>
-                            </label>
-                            <div class="slider-group">
-                                <input type="range" id="minClipDuration" min="100" max="2000" value="500" step="50">
-                                <span id="minClipVal" class="setting-value">500 ms</span>
-                            </div>
-                        </div>
-
-                        <div class="setting-row">
-                            <label>
-                                Min Gap to Cut (ms)
-                                <span class="param-hint">fill pauses shorter than this</span>
-                            </label>
-                            <div class="slider-group">
-                                <input type="range" id="minGapFill" min="0" max="1000" value="300" step="10">
-                                <span id="minGapFillVal" class="setting-value">300 ms</span>
+                            <div class="setting-row">
+                                <label>Min Gap to Cut (ms)</label>
+                                <div class="slider-group">
+                                    <input type="range" id="minGapFill" min="0" max="1000" value="300" step="10">
+                                    <span id="minGapFillVal" class="setting-value">300 ms</span>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
-            </div>
-        </div>
 
-        <!-- Delete Silence + Target Track -->
-        <div class="section">
-            <div class="setting-row">
-                <label>Delete Silence</label>
-                <div class="toggle-group">
-                    <span class="toggle-desc">Remove silence regions from the timeline</span>
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="deleteSilence" checked>
-                        <span class="toggle-slider"></span>
-                    </label>
+                <div class="section" id="resultsSection" style="display:none;">
+                    <label class="section-label">RESULTADO DA ANALISE</label>
+                    <div id="resultsContent" class="results-content"></div>
                 </div>
-            </div>
-            <div class="setting-row">
-                <label>Reduced prerender</label>
-                <div class="toggle-group">
-                    <span class="toggle-desc">Use the bundled 16kHz mono WAV export preset</span>
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="reducedPrerender">
-                        <span class="toggle-slider"></span>
-                    </label>
+
+                <div class="action-row">
+                    <button id="btnCancelConfig" class="btn-secondary">Voltar</button>
+                    <button id="btnApply" class="btn-primary btn-apply">Aplicar cortes</button>
                 </div>
-            </div>
-        </div>
+            </section>
 
-        <div class="section">
-            <label class="section-label">RANGE</label>
-            <div class="range-toggle" role="radiogroup" aria-label="Analysis range">
-                <label class="range-option">
-                    <input type="radio" name="rangeMode" value="full" checked>
-                    <span>Full Sequence</span>
-                </label>
-                <label class="range-option">
-                    <input type="radio" name="rangeMode" value="inout">
-                    <span>In-Out</span>
-                </label>
-            </div>
-            <span class="range-hint">In-Out uses marks from the active Premiere timeline</span>
-        </div>
+            <section id="screenApply" class="screen" data-screen="apply" style="display:none;">
+                <div class="loading-panel">
+                    <h2>Aplicando cortes</h2>
+                    <p>O processo pode ser cancelado entre chunks.</p>
+                    <button id="btnCancelApply" class="btn-danger">Cancelar</button>
+                </div>
+            </section>
 
-        <!-- Presets -->
-        <div class="section">
-            <label class="section-label">PRESETS</label>
-            <div class="presets-row">
-                <button id="btnSavePreset" class="btn-preset" title="Save current settings as JSON">
-                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-                    Save Preset
-                </button>
-                <button id="btnLoadPreset" class="btn-preset" title="Load settings from JSON file">
-                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                    Load Preset
-                </button>
-            </div>
-            <input type="file" id="presetFileInput" accept=".json" style="display:none">
-        </div>
+            <section id="screenDone" class="screen" data-screen="done" style="display:none;">
+                <div class="done-panel">
+                    <h2>Processo concluido</h2>
+                    <div id="doneSummary" class="results-content"></div>
+                    <button id="btnBackStart" class="btn-primary">Voltar ao inicio</button>
+                </div>
+            </section>
+        </main>
 
-        <!-- Audio Tracks -->
-        <div class="section">
-            <label class="section-label">AUDIO TRACKS
-                <span class="section-hint">silence analysis only</span>
-            </label>
-            <div id="trackList" class="track-list">
-                <span class="track-list-empty">Load a sequence to see tracks</span>
-            </div>
-        </div>
-
-        <!-- Analyze Button -->
-        <button id="btnAnalyze" class="btn-primary">Analyze</button>
-
-        <!-- Results -->
-        <div class="section" id="resultsSection" style="display:none;">
-            <label class="section-label">RESULTS</label>
-            <div id="resultsContent" class="results-content"></div>
-            <button id="btnApply" class="btn-primary btn-apply">Apply Cuts</button>
-        </div>
-
-        <!-- Progress -->
         <div id="progressSection" style="display:none;">
             <div class="progress-bar">
                 <div id="progressFill" class="progress-fill"></div>
@@ -246,8 +179,9 @@
             <span id="progressText" class="progress-text">Processing...</span>
         </div>
 
-        <!-- Status -->
         <div id="statusBar" class="status-bar"></div>
+
+        <input type="file" id="presetFileInput" accept=".json" style="display:none">
     </div>
 
     <script>

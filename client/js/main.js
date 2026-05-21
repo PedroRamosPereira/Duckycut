@@ -94,7 +94,6 @@
     const elBtnSavePreset     = document.getElementById("btnSavePreset");
     const elBtnLoadPreset     = document.getElementById("btnLoadPreset");
     const elPresetFileInput   = document.getElementById("presetFileInput");
-    const elDeleteSilence     = document.getElementById("deleteSilence");
     const elReducedPrerender  = document.getElementById("reducedPrerender");
     const elTrackList         = document.getElementById("trackList");
     const elBtnAnalyze        = document.getElementById("btnAnalyze");
@@ -105,6 +104,10 @@
     const elProgressFill      = document.getElementById("progressFill");
     const elProgressText      = document.getElementById("progressText");
     const elStatusBar         = document.getElementById("statusBar");
+    const elBtnCancelConfig   = document.getElementById("btnCancelConfig");
+    const elBtnCancelApply    = document.getElementById("btnCancelApply");
+    const elBtnBackStart      = document.getElementById("btnBackStart");
+    const elDoneSummary       = document.getElementById("doneSummary");
 
     // ── State ─────────────────────────────────────────────────────
     let sequenceInfo    = null;   // from getActiveSequenceInfo()
@@ -118,6 +121,9 @@
     let applyCancelRequested = false;
     let analysisRangeMode = "full";
     let analysisRangeInfo = null;
+    let analysisSession = {
+        renderedMixPath: null
+    };
 
     function getSelectedTrackIndices() {
         return Array.from(document.querySelectorAll(".track-cb:checked"))
@@ -158,15 +164,39 @@
         bindButtons();
         refreshSequence();
         updateAggroHint();
+        showScreen("start");
 
         if (silenceDetector) {
-            setStatus("Ready — run Auto Detect to calibrate", "success");
+            setStatus("Ready", "success");
         } else {
             setStatus("Module error: " + (modulesError || "unknown"), "error");
         }
     }
 
     // ── Sliders ───────────────────────────────────────────────────
+    function showScreen(name) {
+        var screens = document.querySelectorAll(".screen");
+        for (var i = 0; i < screens.length; i++) {
+            screens[i].style.display = screens[i].getAttribute("data-screen") === name ? "flex" : "none";
+        }
+    }
+
+    function cleanupAnalysisSession() {
+        if (analysisSession && analysisSession.renderedMixPath && nodeFs) {
+            try { nodeFs.unlinkSync(analysisSession.renderedMixPath); } catch (_) {}
+        }
+        analysisSession = { renderedMixPath: null };
+    }
+
+    function returnToStart() {
+        analysisResult = null;
+        keepZones = null;
+        analysisRangeInfo = null;
+        hideProgress();
+        elResultsSection.style.display = "none";
+        showScreen("start");
+    }
+
     function bindSliders() {
         elMinDuration.addEventListener("input", () => {
             elMinDurationVal.textContent = elMinDuration.value + " ms";
@@ -215,15 +245,18 @@
 
     // ── Buttons ───────────────────────────────────────────────────
     function bindButtons() {
-        elBtnRefreshSeq.addEventListener("click", refreshSequence);
-        elBtnProbe.addEventListener("click", runProbe);
-        elBtnAnalyze.addEventListener("click", runAnalysis);
-        elBtnApply.addEventListener("click", applyCuts);
-        elBtnLinkPadding.addEventListener("click", togglePaddingLink);
-        elBtnAdvancedToggle.addEventListener("click", toggleAdvanced);
-        elBtnSavePreset.addEventListener("click", savePreset);
-        elBtnLoadPreset.addEventListener("click", () => elPresetFileInput.click());
-        elPresetFileInput.addEventListener("change", loadPreset);
+        if (elBtnRefreshSeq) elBtnRefreshSeq.addEventListener("click", refreshSequence);
+        if (elBtnProbe) elBtnProbe.addEventListener("click", runProbe);
+        if (elBtnAnalyze) elBtnAnalyze.addEventListener("click", runAnalysis);
+        if (elBtnApply) elBtnApply.addEventListener("click", applyCuts);
+        if (elBtnCancelApply) elBtnCancelApply.addEventListener("click", cancelApplyCutsFromPanel);
+        if (elBtnCancelConfig) elBtnCancelConfig.addEventListener("click", returnToStart);
+        if (elBtnBackStart) elBtnBackStart.addEventListener("click", returnToStart);
+        if (elBtnLinkPadding) elBtnLinkPadding.addEventListener("click", togglePaddingLink);
+        if (elBtnAdvancedToggle) elBtnAdvancedToggle.addEventListener("click", toggleAdvanced);
+        if (elBtnSavePreset) elBtnSavePreset.addEventListener("click", savePreset);
+        if (elBtnLoadPreset && elPresetFileInput) elBtnLoadPreset.addEventListener("click", () => elPresetFileInput.click());
+        if (elPresetFileInput) elPresetFileInput.addEventListener("change", loadPreset);
     }
 
     function toggleAdvanced() {
@@ -236,7 +269,7 @@
         paddingLinked = !paddingLinked;
         elBtnLinkPadding.classList.toggle("active", paddingLinked);
         elBtnLinkPadding.title = paddingLinked
-            ? "Padding values are linked — click to unlink"
+            ? "Padding values are linked - click to unlink"
             : "Link padding values";
 
         if (paddingLinked) {
@@ -258,7 +291,6 @@
             paddingLinked:   paddingLinked,
             minClipDuration: parseInt(elMinClipDuration.value, 10),
             minGapFill:      parseInt(elMinGapFill.value, 10),
-            deleteSilence:   elDeleteSilence.checked,
             reducedPrerender: elReducedPrerender.checked,
         };
     }
@@ -270,7 +302,6 @@
         if (s.paddingOut != null)      { elPaddingOut.value = s.paddingOut; elPaddingOutVal.textContent = s.paddingOut + " ms"; }
         if (s.minClipDuration != null) { elMinClipDuration.value = s.minClipDuration; elMinClipVal.textContent = s.minClipDuration + " ms"; }
         if (s.minGapFill != null)      { elMinGapFill.value = s.minGapFill; elMinGapFillVal.textContent = s.minGapFill + " ms"; }
-        if (s.deleteSilence != null)   { elDeleteSilence.checked = s.deleteSilence; }
         if (s.reducedPrerender != null){ elReducedPrerender.checked = s.reducedPrerender; }
         if (s.paddingLinked != null && s.paddingLinked !== paddingLinked) { togglePaddingLink(); }
     }
@@ -401,12 +432,15 @@
     }
 
     function populateTrackCheckboxes(tracks) {
-        if (!tracks || tracks.length === 0) {
+        var visibleTracks = (tracks || []).filter(function(t) {
+            return t && t.clipCount > 0;
+        });
+        if (visibleTracks.length === 0) {
             elTrackList.innerHTML = '<span class="track-list-empty">No audio tracks found</span>';
             return;
         }
         elTrackList.innerHTML = "";
-        tracks.forEach(function(t) {
+        visibleTracks.forEach(function(t) {
             var label = document.createElement("label");
             label.className = "track-item";
             var cb = document.createElement("input");
@@ -414,9 +448,7 @@
             cb.className = "track-cb";
             cb.value = t.index;
             cb.checked = true;
-            var text = document.createTextNode(
-                t.name + (t.clipCount > 0 ? " (" + t.clipCount + " clips)" : " (empty)")
-            );
+            var text = document.createTextNode(t.name + " (" + t.clipCount + " clips)");
             label.appendChild(cb);
             label.appendChild(text);
             elTrackList.appendChild(label);
@@ -653,6 +685,7 @@
 
         elBtnAnalyze.disabled = true;
         elResultsSection.style.display = "none";
+        showScreen("prerender");
         showProgress("Reading sequence tracks...");
 
         var rangePromise = analysisRangeMode === "inout"
@@ -668,7 +701,7 @@
             var projectError = getProjectPathError(projectRaw);
             if (projectError) {
                 setStatus(projectError, "error");
-                hideProgress(); elBtnAnalyze.disabled = false;
+                hideProgress(); elBtnAnalyze.disabled = false; showScreen("start");
                 return;
             }
 
@@ -687,7 +720,7 @@
             if (analysisRangeMode === "inout") {
                 if (!rangeInfo || !rangeInfo.success || !rangeInfo.valid || !(rangeInfo.endSeconds > rangeInfo.startSeconds)) {
                     setStatus("Define In and Out in the Premiere timeline before using Range: In-Out", "error");
-                    hideProgress(); elBtnAnalyze.disabled = false;
+                    hideProgress(); elBtnAnalyze.disabled = false; showScreen("start");
                     return;
                 }
                 rangeInfo.mode = "inout";
@@ -713,22 +746,16 @@
             var selectedAudioTracks = buildSelectedAudioTracksForDetection(selectedIdx, sequenceClips, analysisRangeInfo);
             if (selectedAudioTracks.length === 0) {
                 setStatus("No audio clips found in selected tracks", "error");
-                hideProgress(); elBtnAnalyze.disabled = false;
+                hideProgress(); elBtnAnalyze.disabled = false; showScreen("start");
                 return;
             }
 
             updateProgress(25, "Rendering Premiere audio mix...");
             ensureSelectedTrackMixdown(selectedIdx, analysisRangeInfo, presetMode)
                 .then(function(renderedMixPath) {
+                    analysisSession.renderedMixPath = renderedMixPath;
                     updateProgress(45, "Running FFmpeg silence detection on Premiere render...");
-                    return silenceDetector.detectSilence(renderedMixPath, threshold, minDuration)
-                        .then(function(result) {
-                            try { nodeFs.unlinkSync(renderedMixPath); } catch (_) {}
-                            return result;
-                        }, function(err) {
-                            try { nodeFs.unlinkSync(renderedMixPath); } catch (_) {}
-                            throw err;
-                        });
+                    return silenceDetector.detectSilence(renderedMixPath, threshold, minDuration);
                 })
                 .then(function(result) {
                     processDetectionResult(result);
@@ -739,7 +766,7 @@
                 });
 
             function processDetectionResult(result) {
-                updateProgress(80, "Applying Clean Cut algorithm...");
+                updateProgress(80, "Applying cut algorithm...");
 
                 var rawSilenceIntervals = result.silenceIntervals || [];
                 var silenceIntervals = rawSilenceIntervals;
@@ -775,7 +802,8 @@
 
                 updateProgress(100, "Analysis complete!");
                 showResults(result, keepZones, true);
-                setStatus("Analysis complete — threshold: " + threshold + " dB (Premiere audio mix)", "success");
+                setStatus("Analysis complete - threshold: " + threshold + " dB (Premiere audio mix)", "success");
+                showScreen("config");
                 hideProgress(); elBtnAnalyze.disabled = false;
             }
         });
@@ -902,7 +930,7 @@
         var totalKept = zones.reduce((sum, z) => sum + (z[1] - z[0]), 0);
         var timeSaved = analysis.mediaDuration - totalKept;
         var renderNote = wasRendered
-            ? '<div class="result-line result-note"><span>Audio source:</span><span class="result-value">Rendered mixdown ✓</span></div>'
+            ? '<div class="result-line result-note"><span>Audio source:</span><span class="result-value">Rendered mixdown</span></div>'
             : '<div class="result-line result-note"><span>Audio source:</span><span class="result-value">Source file</span></div>';
 
         elResultsContent.innerHTML =
@@ -913,7 +941,7 @@
             '<div class="result-line"><span>Final duration:</span><span class="result-value">'        + formatTime(totalKept)    + '</span></div>';
 
         elResultsSection.style.display = "flex";
-        elBtnApply.style.display = elDeleteSilence.checked ? "block" : "none";
+        elBtnApply.style.display = "block";
     }
 
     // ── Apply Cuts ───────────────────────────────────────────────
@@ -931,19 +959,25 @@
     function beginApplyCancelMode() {
         isApplyingCuts = true;
         applyCancelRequested = false;
-        elBtnApply.disabled = false;
-        elBtnApply.textContent = "Cancelar";
-        elBtnApply.classList.add("btn-danger");
-        elBtnApply.title = "Cancelar cortes imediatamente";
+        showScreen("apply");
+        if (elBtnCancelApply) {
+            elBtnCancelApply.disabled = false;
+            elBtnCancelApply.textContent = "Cancelar";
+            elBtnCancelApply.classList.add("btn-danger");
+            elBtnCancelApply.title = "Cancelar cortes imediatamente";
+        }
     }
 
     function endApplyCancelMode() {
         isApplyingCuts = false;
         applyCancelRequested = false;
         elBtnApply.disabled = false;
-        elBtnApply.textContent = "Apply Cuts";
-        elBtnApply.classList.remove("btn-danger");
-        elBtnApply.title = "";
+        if (elBtnCancelApply) {
+            elBtnCancelApply.disabled = false;
+            elBtnCancelApply.textContent = "Cancelar";
+            elBtnCancelApply.classList.remove("btn-danger");
+            elBtnCancelApply.title = "";
+        }
     }
 
     function cancelApplyCutsFromPanel() {
@@ -1057,7 +1091,8 @@
         function finishCancelled(appliedCount) {
             updateProgress(100, "Cancelado");
             setStatus("Cortes cancelados" + (appliedCount ? " após " + appliedCount + " zonas" : ""), "error");
-            hideProgress(); endApplyCancelMode();
+            cleanupAnalysisSession();
+            hideProgress(); endApplyCancelMode(); showScreen("config");
         }
 
         function runNextCutChunk(index, appliedCount, skippedCount) {
@@ -1070,6 +1105,13 @@
                 updateProgress(100, "Done!");
                 setStatus("Deleted " + appliedCount + " zones" +
                     (skippedCount ? " (" + skippedCount + " skipped)" : ""), "success");
+                if (elDoneSummary) {
+                    elDoneSummary.innerHTML =
+                        '<div class="result-line"><span>Zonas deletadas:</span><span class="result-value">' + appliedCount + '</span></div>' +
+                        '<div class="result-line"><span>Zonas puladas:</span><span class="result-value">' + skippedCount + '</span></div>';
+                }
+                cleanupAnalysisSession();
+                showScreen("done");
                 hideProgress(); endApplyCancelMode();
                 return;
             }

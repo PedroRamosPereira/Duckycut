@@ -80,7 +80,7 @@ test("panel keeps manual controls on screen three and applies cuts from there", 
     assert.match(screen, /id="btnCancelConfig"/, "screen three should expose a return/cancel button");
 });
 
-test("panel exposes the VAD version of screen three as visual placeholders", () => {
+test("panel exposes the VAD version of screen three", () => {
     const html = readProjectFile("client/index.html");
     const main = readProjectFile("client/js/main.js");
 
@@ -94,10 +94,89 @@ test("panel exposes the VAD version of screen three as visual placeholders", () 
     assert.match(screen, /id="vadPaddingIn"/, "VAD screen should expose padding in");
     assert.match(screen, /id="vadPaddingOut"/, "VAD screen should expose padding out");
     assert.match(screen, /id="btnVadLinkPadding"/, "VAD padding should have a link button");
-    assert.match(screen, /id="btnApplyVadPlaceholder"/, "VAD apply button should exist as a placeholder");
+    assert.match(screen, /id="btnApplyVadPlaceholder"/, "VAD apply button should exist");
     assert.match(main, /function getSelectedDetectionMode\(/, "panel should read the selected detection mode");
     assert.match(main, /function showConfigForDetectionMode\(/, "panel should switch screen three between manual and VAD visuals");
-    assert.match(main, /function applyVadCutsPlaceholder\(/, "VAD apply should be a placeholder for now");
+    assert.match(main, /function applyVadCuts\(/, "VAD apply should be wired to the real flow");
+});
+
+test("panel loads the VAD detector and translator modules", () => {
+    const main = readProjectFile("client/js/main.js");
+    const html = readProjectFile("client/index.html");
+
+    assert.match(main, /vadDetector\s*=\s*nodeRequire\(nodePath\.join\(serverDir,\s*"vadDetector\.js"\)\)/, "panel should load the Node VAD detector");
+    assert.match(main, /function getVadTranslator\(/, "panel should resolve the VAD translator helper");
+    assert.match(html, /js\/vadTranslator\.js/, "panel should load the browser VAD translator script");
+});
+
+test("panel runs VAD after prerender when VAD mode is selected", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function runAnalysis");
+    assert.notEqual(start, -1, "runAnalysis should exist");
+
+    const end = main.indexOf("\n    function prepareCutZonesFromCurrentConfig", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /analysisSession\.detectionMode\s*=\s*getSelectedDetectionMode\(\)/, "Analyze should remember the selected detection mode");
+    assert.match(fn, /runVadAfterPrerender\(renderedMixPath\)/, "VAD mode should run detector after prerender");
+    assert.match(fn, /analysisSession\.vadResult/, "VAD result should be saved in session state");
+    assert.match(fn, /showConfigForDetectionMode\(analysisSession\.detectionMode\)/, "Analyze should open the VAD config after detection");
+});
+
+test("panel recalculates VAD keep zones from cached timestamps without rerunning ONNX", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function recomputeVadKeepZones");
+    assert.notEqual(start, -1, "recomputeVadKeepZones should exist");
+
+    const end = main.indexOf("\n    function", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /analysisSession\.vadResult\.speechIntervals/, "VAD recompute should use cached speech intervals");
+    assert.match(fn, /computeVadKeepZones/, "VAD recompute should call the translator");
+    assert.match(fn, /analysisSession\.vadKeepZones\s*=/, "VAD recompute should store keep zones in session");
+    assert.doesNotMatch(fn, /detectVoiceActivity/, "VAD recompute should not call ONNX again");
+});
+
+test("panel Apply Cuts in VAD mode uses translated keep zones and existing cutter", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function applyVadCuts");
+    assert.notEqual(start, -1, "applyVadCuts should exist");
+
+    const end = main.indexOf("\n    function", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /recomputeVadKeepZones\(\)/, "VAD apply should refresh keep zones from current padding");
+    assert.match(fn, /keepZones\s*=\s*analysisSession\.vadKeepZones/, "VAD apply should feed keepZones into the shared Apply Cuts path");
+    assert.match(fn, /applyCutsInPlaceFromPanel\(\)/, "VAD apply should use the existing Apply Cuts engine");
+    assert.doesNotMatch(fn, /detectSilence\(/, "VAD apply should not run FFmpeg silencedetect");
+});
+
+test("panel Apply Cuts in VAD mode allows empty keep zones from silent audio", () => {
+    const main = readProjectFile("client/js/main.js");
+    const applyVadStart = main.indexOf("function applyVadCuts");
+    assert.notEqual(applyVadStart, -1, "applyVadCuts should exist");
+    const applyVadEnd = main.indexOf("\n    function", applyVadStart + 1);
+    const applyVad = main.slice(applyVadStart, applyVadEnd === -1 ? main.length : applyVadEnd);
+
+    const applyStart = main.indexOf("function applyCutsInPlaceFromPanel");
+    assert.notEqual(applyStart, -1, "applyCutsInPlaceFromPanel should exist");
+    const applyEnd = main.indexOf("\n        function finishCancelled", applyStart + 1);
+    const applyFn = main.slice(applyStart, applyEnd === -1 ? main.length : applyEnd);
+
+    assert.doesNotMatch(applyVad, /VAD did not detect speech to keep/, "silent VAD output should still be applied as a full-range cut");
+    assert.match(applyFn, /\(keepZones\s*\|\|\s*\[\]\)\.slice\(\)/, "shared Apply Cuts path should invert an empty keep-zone list into a full-range cut");
+});
+
+test("panel manual mode does not call the VAD detector", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function prepareCutZonesFromCurrentConfig");
+    assert.notEqual(start, -1, "manual preparation should exist");
+
+    const end = main.indexOf("\n    function processDetectionResult", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /silenceDetector\.detectSilence/, "manual apply should keep using FFmpeg silencedetect");
+    assert.doesNotMatch(fn, /detectVoiceActivity|runVadAfterPrerender/, "manual apply should not call VAD");
 });
 
 test("panel removes optional delete silence UI and keeps applying cuts enabled", () => {

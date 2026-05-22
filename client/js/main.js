@@ -19,6 +19,7 @@
     const APPLY_CUTS_CHUNK_SETTLE_DELAY_MS = 250;
 
     let silenceDetector = null;
+    let vadDetector     = null;
     let nodeRequire     = null;
     let modulesError    = "";
     let nodeFs          = null;
@@ -60,6 +61,7 @@
             }
 
             silenceDetector = nodeRequire(nodePath.join(serverDir, "silenceDetector.js"));
+            vadDetector = nodeRequire(nodePath.join(serverDir, "vadDetector.js"));
         } catch (e) {
             modulesError = e.message;
         }
@@ -137,6 +139,8 @@
     let analysisSession = {
         renderedMixPath: null,
         detectionMode: "manual",
+        vadResult: null,
+        vadKeepZones: null,
         vadInitialCutCount: null
     };
 
@@ -208,6 +212,8 @@
         analysisSession = {
             renderedMixPath: null,
             detectionMode: "manual",
+            vadResult: null,
+            vadKeepZones: null,
             vadInitialCutCount: null
         };
     }
@@ -225,10 +231,15 @@
         var isVadMode = mode === "vad";
         if (elManualConfigPanel) elManualConfigPanel.style.display = isVadMode ? "none" : "flex";
         if (elVadConfigPanel) elVadConfigPanel.style.display = isVadMode ? "flex" : "none";
+        if (isVadMode) recomputeVadKeepZones();
         if (elVadInitialCutsCount) {
             var count = analysisSession && analysisSession.vadInitialCutCount;
             elVadInitialCutsCount.textContent = count == null ? "--" : String(count);
         }
+    }
+
+    function getVadTranslator() {
+        return window.Duckycut && window.Duckycut.vadTranslator ? window.Duckycut.vadTranslator : null;
     }
 
     function bindSliders() {
@@ -255,6 +266,7 @@
                 elVadPaddingOut.value = elVadPaddingIn.value;
                 elVadPaddingOutVal.textContent = elVadPaddingIn.value + " ms";
             }
+            recomputeVadKeepZones();
         });
         if (elVadPaddingOut) elVadPaddingOut.addEventListener("input", () => {
             elVadPaddingOutVal.textContent = elVadPaddingOut.value + " ms";
@@ -262,6 +274,7 @@
                 elVadPaddingIn.value = elVadPaddingOut.value;
                 elVadPaddingInVal.textContent = elVadPaddingOut.value + " ms";
             }
+            recomputeVadKeepZones();
         });
         elMinClipDuration.addEventListener("input", () => {
             elMinClipVal.textContent = elMinClipDuration.value + " ms";
@@ -303,7 +316,7 @@
         if (elBtnBackStart) elBtnBackStart.addEventListener("click", returnToStart);
         if (elBtnLinkPadding) elBtnLinkPadding.addEventListener("click", togglePaddingLink);
         if (elBtnVadLinkPadding) elBtnVadLinkPadding.addEventListener("click", toggleVadPaddingLink);
-        if (elBtnApplyVadPlaceholder) elBtnApplyVadPlaceholder.addEventListener("click", applyVadCutsPlaceholder);
+        if (elBtnApplyVadPlaceholder) elBtnApplyVadPlaceholder.addEventListener("click", applyVadCuts);
         if (elBtnAdvancedToggle) elBtnAdvancedToggle.addEventListener("click", toggleAdvanced);
         if (elBtnSavePreset) elBtnSavePreset.addEventListener("click", savePreset);
         if (elBtnLoadPreset && elPresetFileInput) elBtnLoadPreset.addEventListener("click", () => elPresetFileInput.click());
@@ -343,8 +356,83 @@
         }
     }
 
-    function applyVadCutsPlaceholder() {
-        setStatus("Placeholder: VAD padding calculation and Apply Cuts will be connected next.", "success");
+    function applyVadCuts() {
+        if (isApplyingCuts) {
+            cancelApplyCutsFromPanel();
+            return;
+        }
+        if (!analysisSession || !analysisSession.vadResult) {
+            setStatus("VAD result is not available", "error");
+            return;
+        }
+        if (recomputeVadKeepZones() === null) {
+            return;
+        }
+        keepZones = analysisSession.vadKeepZones || [];
+        analysisResult = {
+            type: "vad",
+            mediaDuration: (seqSettings && seqSettings.durationSeconds) || analysisSession.vadResult.mediaDuration,
+            speechIntervals: analysisSession.vadResult.speechIntervals,
+        };
+        return applyCutsInPlaceFromPanel();
+    }
+
+    function recomputeVadKeepZones() {
+        if (!analysisSession || !analysisSession.vadResult || !analysisSession.vadResult.speechIntervals) return null;
+        var translator = getVadTranslator();
+        if (!translator || !translator.computeVadKeepZones) {
+            setStatus("VAD translator not loaded", "error");
+            return null;
+        }
+
+        var duration = analysisSession.vadResult.mediaDuration;
+        if (analysisRangeInfo && analysisRangeInfo.mode === "inout") {
+            duration = analysisRangeInfo.durationSeconds;
+        }
+
+        var localKeepZones = translator.computeVadKeepZones(
+            analysisSession.vadResult.speechIntervals,
+            duration,
+            {
+                paddingIn: parseInt(elVadPaddingIn.value, 10) / 1000,
+                paddingOut: parseInt(elVadPaddingOut.value, 10) / 1000,
+                minClipDuration: parseInt(elMinClipDuration.value, 10) / 1000,
+                minGapDuration: parseInt(elMinGapFill.value, 10) / 1000,
+            }
+        );
+
+        if (analysisRangeInfo && analysisRangeInfo.mode === "inout") {
+            analysisSession.vadKeepZones = translator.offsetIntervals(localKeepZones, analysisRangeInfo.startSeconds);
+        } else {
+            analysisSession.vadKeepZones = localKeepZones;
+        }
+
+        var totalKept = 0;
+        for (var i = 0; i < analysisSession.vadKeepZones.length; i++) {
+            totalKept += analysisSession.vadKeepZones[i][1] - analysisSession.vadKeepZones[i][0];
+        }
+        var fullDuration = (seqSettings && seqSettings.durationSeconds) || duration;
+        var localCutZones = translator.computeCutZonesFromKeepZones
+            ? translator.computeCutZonesFromKeepZones(localKeepZones, duration)
+            : [];
+        analysisSession.vadInitialCutCount = localCutZones.length;
+        if (elVadInitialCutsCount) elVadInitialCutsCount.textContent = String(analysisSession.vadInitialCutCount);
+        setStatus("VAD ready - estimated removed: " + formatTime(Math.max(0, fullDuration - totalKept)), "success");
+        return analysisSession.vadKeepZones;
+    }
+
+    function runVadAfterPrerender(renderedMixPath) {
+        if (!vadDetector || !vadDetector.detectVoiceActivity) {
+            return Promise.reject(new Error("VAD detector not loaded"));
+        }
+        updateProgress(70, "Running Silero VAD...");
+        return vadDetector.detectVoiceActivity(renderedMixPath, {})
+            .then(function(vadResult) {
+                analysisSession.vadResult = vadResult;
+                analysisSession.vadInitialCutCount = vadResult.speechIntervals ? Math.max(0, vadResult.speechIntervals.length - 1) : 0;
+                recomputeVadKeepZones();
+                return vadResult;
+            });
     }
 
     // ── Presets ───────────────────────────────────────────────────
@@ -751,7 +839,12 @@
         analysisRangeMode = getSelectedRangeMode();
         analysisRangeInfo = null;
         analysisSession.detectionMode = getSelectedDetectionMode();
+        analysisSession.vadResult = null;
+        analysisSession.vadKeepZones = null;
         analysisSession.vadInitialCutCount = null;
+        if (analysisSession.detectionMode === "vad" && (!vadDetector || !vadDetector.detectVoiceActivity)) {
+            setStatus("VAD detector not loaded: " + (modulesError || "unknown"), "error"); return;
+        }
 
         elBtnAnalyze.disabled = true;
         elResultsSection.style.display = "none";
@@ -810,6 +903,7 @@
             updateProgress(10, "Preparing audio for analysis...");
 
             var presetMode = elReducedPrerender.checked ? "reduced" : "default";
+            if (analysisSession.detectionMode === "vad") presetMode = "reduced";
 
             var selectedAudioTracks = buildSelectedAudioTracksForDetection(selectedIdx, sequenceClips, analysisRangeInfo);
             if (selectedAudioTracks.length === 0) {
@@ -824,11 +918,18 @@
                     analysisSession.renderedMixPath = renderedMixPath;
                     analysisResult = null;
                     keepZones = null;
+                    if (analysisSession.detectionMode === "vad") {
+                        return runVadAfterPrerender(renderedMixPath).then(function() {
+                            updateProgress(100, "VAD analysis complete!");
+                            showConfigForDetectionMode(analysisSession.detectionMode);
+                            setStatus("VAD analysis complete - adjust padding and apply cuts", "success");
+                            showScreen("config");
+                            hideProgress(); elBtnAnalyze.disabled = false;
+                        });
+                    }
                     updateProgress(100, "Prerender complete!");
                     showConfigForDetectionMode(analysisSession.detectionMode);
-                    setStatus(analysisSession.detectionMode === "vad"
-                        ? "Prerender complete - VAD configuration placeholder ready"
-                        : "Prerender complete - adjust settings and apply cuts", "success");
+                    setStatus("Prerender complete - adjust settings and apply cuts", "success");
                     showScreen("config");
                     hideProgress(); elBtnAnalyze.disabled = false;
                 })
@@ -1129,7 +1230,7 @@
         const isDropFrame = (seqSettings && typeof seqSettings.isDropFrame === "boolean")
                     ? seqSettings.isDropFrame : false;
 
-        const sorted = keepZones.slice().sort(function (a, b) { return a[0] - b[0]; });
+        const sorted = (keepZones || []).slice().sort(function (a, b) { return a[0] - b[0]; });
         const rawCuts = [];
         let cursor = 0;
         for (let i = 0; i < sorted.length; i++) {

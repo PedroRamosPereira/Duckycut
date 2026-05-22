@@ -22,11 +22,11 @@
                 </div>
 
                 <div class="section">
-                    <label class="section-label">MODO DE DETECCAO</label>
-                    <div class="segmented-control" role="radiogroup" aria-label="Modo de deteccao">
+                    <label class="section-label">MODO DE DETECÇÃO</label>
+                    <div class="segmented-control" role="radiogroup" aria-label="Modo de detecção">
                         <label class="segment-option">
                             <input type="radio" name="detectionMode" value="vad">
-                            <span>Deteccao automatica - VAD (WIP)</span>
+                            <span>Detecção automática - VAD (WIP)</span>
                         </label>
                         <label class="segment-option">
                             <input type="radio" name="detectionMode" value="manual" checked>
@@ -71,14 +71,15 @@
 
             <section id="screenPrerender" class="screen" data-screen="prerender" style="display:none;">
                 <div class="loading-panel">
-                    <h2>Preparando audio</h2>
-                    <p>Aguarde enquanto o WAV temporario e gerado.</p>
+                    <h2>Preparando áudio</h2>
+                    <p>Aguarde enquanto o WAV temporário é gerado.</p>
                 </div>
             </section>
 
             <section id="screenConfig" class="screen" data-screen="config" style="display:none;">
+                <div id="manualConfigPanel" class="config-panel">
                 <div class="section">
-                    <label class="section-label">CONFIGURACAO MANUAL</label>
+                    <label class="section-label">CONFIGURAÇÃO MANUAL</label>
 
                     <div class="setting-row">
                         <label>Aggressiveness</label>
@@ -145,13 +146,53 @@
                 </div>
 
                 <div class="section" id="resultsSection" style="display:none;">
-                    <label class="section-label">RESULTADO DA ANALISE</label>
+                    <label class="section-label">RESULTADO DA ANÁLISE</label>
                     <div id="resultsContent" class="results-content"></div>
                 </div>
 
                 <div class="action-row">
                     <button id="btnCancelConfig" class="btn-secondary">Voltar</button>
                     <button id="btnApply" class="btn-primary btn-apply">Aplicar cortes</button>
+                </div>
+                </div>
+
+                <div id="vadConfigPanel" class="config-panel" style="display:none;">
+                    <div class="vad-summary-panel">
+                        <label class="section-label">RESULTADO INICIAL DO VAD</label>
+                        <div class="vad-cut-count">
+                            <span id="vadInitialCutsCount" class="vad-cut-count-value">--</span>
+                            <span class="vad-cut-count-label">cortes detectados</span>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <label class="section-label">PADDING</label>
+                        <div class="padding-link-group">
+                            <div class="padding-rows">
+                                <div class="setting-row">
+                                    <label>Padding In (ms)</label>
+                                    <div class="slider-group">
+                                        <input type="range" id="vadPaddingIn" min="0" max="500" value="50" step="10">
+                                        <span id="vadPaddingInVal" class="setting-value">50 ms</span>
+                                    </div>
+                                </div>
+
+                                <div class="setting-row">
+                                    <label>Padding Out (ms)</label>
+                                    <div class="slider-group">
+                                        <input type="range" id="vadPaddingOut" min="0" max="500" value="150" step="10">
+                                        <span id="vadPaddingOutVal" class="setting-value">150 ms</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <button id="btnVadLinkPadding" class="btn-link-padding" type="button" title="Link padding values" aria-label="Link VAD padding">Link</button>
+                        </div>
+                    </div>
+
+                    <div class="action-row">
+                        <button id="btnCancelVadConfig" class="btn-secondary" type="button">Voltar</button>
+                        <button id="btnApplyVadPlaceholder" class="btn-primary btn-apply" type="button">Aplicar cortes</button>
+                    </div>
                 </div>
             </section>
 
@@ -165,9 +206,9 @@
 
             <section id="screenDone" class="screen" data-screen="done" style="display:none;">
                 <div class="done-panel">
-                    <h2>Processo concluido</h2>
+                    <h2>Processo concluído</h2>
                     <div id="doneSummary" class="results-content"></div>
-                    <button id="btnBackStart" class="btn-primary">Voltar ao inicio</button>
+                    <button id="btnBackStart" class="btn-primary">Voltar ao início</button>
                 </div>
             </section>
         </main>

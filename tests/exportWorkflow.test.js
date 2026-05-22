@@ -36,6 +36,19 @@ test("panel exposes a reduced prerender checkbox", () => {
     assert.match(html, /Reduced prerender/i, "checkbox should be labelled as reduced prerender");
 });
 
+test("panel copy uses proper Portuguese accents in visible labels", () => {
+    const html = readProjectFile("client/index.html");
+
+    assert.match(html, /MODO DE DETECÇÃO/, "panel should show 'detecção' with accent");
+    assert.match(html, /Detecção automática - VAD \(WIP\)/, "automatic detection label should be accented");
+    assert.match(html, /Preparando áudio/, "prerender title should show 'áudio' with accent");
+    assert.match(html, /WAV temporário é gerado/, "prerender description should use accented copy");
+    assert.match(html, /CONFIGURAÇÃO MANUAL/, "manual config title should be accented");
+    assert.match(html, /RESULTADO DA ANÁLISE/, "results title should be accented");
+    assert.match(html, /Processo concluído/, "done title should be accented");
+    assert.match(html, /Voltar ao início/, "done button should be accented");
+});
+
 test("panel separates the workflow into five screens", () => {
     const html = readProjectFile("client/index.html");
     const main = readProjectFile("client/js/main.js");
@@ -65,6 +78,26 @@ test("panel keeps manual controls on screen three and applies cuts from there", 
     assert.match(screen, /id="minGapFill"/, "screen three should keep advanced min gap");
     assert.match(screen, /id="btnApply"/, "screen three should expose the apply cuts button");
     assert.match(screen, /id="btnCancelConfig"/, "screen three should expose a return/cancel button");
+});
+
+test("panel exposes the VAD version of screen three as visual placeholders", () => {
+    const html = readProjectFile("client/index.html");
+    const main = readProjectFile("client/js/main.js");
+
+    const start = html.indexOf('id="screenConfig"');
+    assert.notEqual(start, -1, "screen three should exist");
+    const end = html.indexOf('id="screenApply"', start);
+    const screen = html.slice(start, end === -1 ? html.length : end);
+
+    assert.match(screen, /id="vadConfigPanel"/, "screen three should include a VAD config panel");
+    assert.match(screen, /id="vadInitialCutsCount"/, "VAD screen should show the initial VAD cut count");
+    assert.match(screen, /id="vadPaddingIn"/, "VAD screen should expose padding in");
+    assert.match(screen, /id="vadPaddingOut"/, "VAD screen should expose padding out");
+    assert.match(screen, /id="btnVadLinkPadding"/, "VAD padding should have a link button");
+    assert.match(screen, /id="btnApplyVadPlaceholder"/, "VAD apply button should exist as a placeholder");
+    assert.match(main, /function getSelectedDetectionMode\(/, "panel should read the selected detection mode");
+    assert.match(main, /function showConfigForDetectionMode\(/, "panel should switch screen three between manual and VAD visuals");
+    assert.match(main, /function applyVadCutsPlaceholder\(/, "VAD apply should be a placeholder for now");
 });
 
 test("panel removes optional delete silence UI and keeps applying cuts enabled", () => {

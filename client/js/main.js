@@ -109,6 +109,16 @@
     const elBtnCancelApply    = document.getElementById("btnCancelApply");
     const elBtnBackStart      = document.getElementById("btnBackStart");
     const elDoneSummary       = document.getElementById("doneSummary");
+    const elManualConfigPanel = document.getElementById("manualConfigPanel");
+    const elVadConfigPanel    = document.getElementById("vadConfigPanel");
+    const elVadInitialCutsCount = document.getElementById("vadInitialCutsCount");
+    const elVadPaddingIn      = document.getElementById("vadPaddingIn");
+    const elVadPaddingInVal   = document.getElementById("vadPaddingInVal");
+    const elVadPaddingOut     = document.getElementById("vadPaddingOut");
+    const elVadPaddingOutVal  = document.getElementById("vadPaddingOutVal");
+    const elBtnVadLinkPadding = document.getElementById("btnVadLinkPadding");
+    const elBtnCancelVadConfig = document.getElementById("btnCancelVadConfig");
+    const elBtnApplyVadPlaceholder = document.getElementById("btnApplyVadPlaceholder");
 
     // ── State ─────────────────────────────────────────────────────
     let sequenceInfo    = null;   // from getActiveSequenceInfo()
@@ -118,13 +128,16 @@
     let probeResult     = null;   // { meanVolume, maxVolume, channelCount }
     let seqSettings     = null;   // from getSequenceSettings()
     let paddingLinked   = false;  // whether Padding In/Out are synced
+    let vadPaddingLinked = false;
     let isPreparingCuts = false;
     let isApplyingCuts  = false;
     let applyCancelRequested = false;
     let analysisRangeMode = "full";
     let analysisRangeInfo = null;
     let analysisSession = {
-        renderedMixPath: null
+        renderedMixPath: null,
+        detectionMode: "manual",
+        vadInitialCutCount: null
     };
 
     function getSelectedTrackIndices() {
@@ -135,6 +148,11 @@
     function getSelectedRangeMode() {
         var selected = document.querySelector('input[name="rangeMode"]:checked');
         return selected ? selected.value : "full";
+    }
+
+    function getSelectedDetectionMode() {
+        var selected = document.querySelector('input[name="detectionMode"]:checked');
+        return selected ? selected.value : "manual";
     }
 
     function getApplyCutsLogPath() {
@@ -187,16 +205,30 @@
         if (analysisSession && analysisSession.renderedMixPath && nodeFs) {
             try { nodeFs.unlinkSync(analysisSession.renderedMixPath); } catch (_) {}
         }
-        analysisSession = { renderedMixPath: null };
+        analysisSession = {
+            renderedMixPath: null,
+            detectionMode: "manual",
+            vadInitialCutCount: null
+        };
     }
 
     function returnToStart() {
         analysisResult = null;
         keepZones = null;
         analysisRangeInfo = null;
+        if (elResultsSection) elResultsSection.style.display = "none";
         hideProgress();
-        elResultsSection.style.display = "none";
         showScreen("start");
+    }
+
+    function showConfigForDetectionMode(mode) {
+        var isVadMode = mode === "vad";
+        if (elManualConfigPanel) elManualConfigPanel.style.display = isVadMode ? "none" : "flex";
+        if (elVadConfigPanel) elVadConfigPanel.style.display = isVadMode ? "flex" : "none";
+        if (elVadInitialCutsCount) {
+            var count = analysisSession && analysisSession.vadInitialCutCount;
+            elVadInitialCutsCount.textContent = count == null ? "--" : String(count);
+        }
     }
 
     function bindSliders() {
@@ -215,6 +247,20 @@
             if (paddingLinked) {
                 elPaddingIn.value = elPaddingOut.value;
                 elPaddingInVal.textContent = elPaddingOut.value + " ms";
+            }
+        });
+        if (elVadPaddingIn) elVadPaddingIn.addEventListener("input", () => {
+            elVadPaddingInVal.textContent = elVadPaddingIn.value + " ms";
+            if (vadPaddingLinked) {
+                elVadPaddingOut.value = elVadPaddingIn.value;
+                elVadPaddingOutVal.textContent = elVadPaddingIn.value + " ms";
+            }
+        });
+        if (elVadPaddingOut) elVadPaddingOut.addEventListener("input", () => {
+            elVadPaddingOutVal.textContent = elVadPaddingOut.value + " ms";
+            if (vadPaddingLinked) {
+                elVadPaddingIn.value = elVadPaddingOut.value;
+                elVadPaddingInVal.textContent = elVadPaddingOut.value + " ms";
             }
         });
         elMinClipDuration.addEventListener("input", () => {
@@ -253,8 +299,11 @@
         if (elBtnApply) elBtnApply.addEventListener("click", applyCuts);
         if (elBtnCancelApply) elBtnCancelApply.addEventListener("click", cancelApplyCutsFromPanel);
         if (elBtnCancelConfig) elBtnCancelConfig.addEventListener("click", returnToStart);
+        if (elBtnCancelVadConfig) elBtnCancelVadConfig.addEventListener("click", returnToStart);
         if (elBtnBackStart) elBtnBackStart.addEventListener("click", returnToStart);
         if (elBtnLinkPadding) elBtnLinkPadding.addEventListener("click", togglePaddingLink);
+        if (elBtnVadLinkPadding) elBtnVadLinkPadding.addEventListener("click", toggleVadPaddingLink);
+        if (elBtnApplyVadPlaceholder) elBtnApplyVadPlaceholder.addEventListener("click", applyVadCutsPlaceholder);
         if (elBtnAdvancedToggle) elBtnAdvancedToggle.addEventListener("click", toggleAdvanced);
         if (elBtnSavePreset) elBtnSavePreset.addEventListener("click", savePreset);
         if (elBtnLoadPreset && elPresetFileInput) elBtnLoadPreset.addEventListener("click", () => elPresetFileInput.click());
@@ -279,6 +328,23 @@
             elPaddingOut.value          = elPaddingIn.value;
             elPaddingOutVal.textContent = elPaddingIn.value + " ms";
         }
+    }
+
+    function toggleVadPaddingLink() {
+        vadPaddingLinked = !vadPaddingLinked;
+        elBtnVadLinkPadding.classList.toggle("active", vadPaddingLinked);
+        elBtnVadLinkPadding.title = vadPaddingLinked
+            ? "VAD padding values are linked - click to unlink"
+            : "Link padding values";
+
+        if (vadPaddingLinked) {
+            elVadPaddingOut.value = elVadPaddingIn.value;
+            elVadPaddingOutVal.textContent = elVadPaddingIn.value + " ms";
+        }
+    }
+
+    function applyVadCutsPlaceholder() {
+        setStatus("Placeholder: VAD padding calculation and Apply Cuts will be connected next.", "success");
     }
 
     // ── Presets ───────────────────────────────────────────────────
@@ -684,6 +750,8 @@
 
         analysisRangeMode = getSelectedRangeMode();
         analysisRangeInfo = null;
+        analysisSession.detectionMode = getSelectedDetectionMode();
+        analysisSession.vadInitialCutCount = null;
 
         elBtnAnalyze.disabled = true;
         elResultsSection.style.display = "none";
@@ -757,7 +825,10 @@
                     analysisResult = null;
                     keepZones = null;
                     updateProgress(100, "Prerender complete!");
-                    setStatus("Prerender complete - adjust settings and apply cuts", "success");
+                    showConfigForDetectionMode(analysisSession.detectionMode);
+                    setStatus(analysisSession.detectionMode === "vad"
+                        ? "Prerender complete - VAD configuration placeholder ready"
+                        : "Prerender complete - adjust settings and apply cuts", "success");
                     showScreen("config");
                     hideProgress(); elBtnAnalyze.disabled = false;
                 })

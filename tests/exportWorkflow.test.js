@@ -28,12 +28,11 @@ test("panel analysis copy describes Premiere-rendered selected-track detection",
     assert.match(main, /Premiere audio mix|Premiere render|selected tracks/i);
 });
 
-test("panel exposes a reduced prerender checkbox", () => {
+test("panel does not expose reduced prerender as a user option", () => {
     const html = readProjectFile("client/index.html");
 
-    assert.match(html, /id="reducedPrerender"/, "UI should expose the reduced prerender checkbox");
-    assert.match(html, /type="checkbox"\s+id="reducedPrerender"|id="reducedPrerender"\s+type="checkbox"/, "reduced prerender control should be a checkbox");
-    assert.match(html, /Reduced prerender/i, "checkbox should be labelled as reduced prerender");
+    assert.doesNotMatch(html, /id="reducedPrerender"/, "UI should not expose a reduced prerender checkbox");
+    assert.doesNotMatch(html, /Reduced prerender/i, "UI should not show reduced prerender copy");
 });
 
 test("panel copy uses proper Portuguese accents in visible labels", () => {
@@ -213,6 +212,42 @@ test("panel hides empty audio tracks in the selector", () => {
     assert.doesNotMatch(fn, /\(empty\)/, "empty tracks should not be rendered with an empty label");
 });
 
+test("panel refreshes the active sequence automatically while idle", () => {
+    const main = readProjectFile("client/js/main.js");
+    const initStart = main.indexOf("function init");
+    const refreshStart = main.indexOf("function refreshSequence");
+    assert.notEqual(initStart, -1, "init should exist");
+    assert.notEqual(refreshStart, -1, "refreshSequence should exist");
+
+    const initEnd = main.indexOf("\n    //", initStart + 1);
+    const initFn = main.slice(initStart, initEnd === -1 ? main.length : initEnd);
+    const autoStart = main.indexOf("function startSequenceAutoRefresh");
+    assert.notEqual(autoStart, -1, "auto refresh helper should exist");
+    const autoEnd = main.indexOf("\n    function", autoStart + 1);
+    const autoFn = main.slice(autoStart, autoEnd === -1 ? main.length : autoEnd);
+
+    assert.match(main, /SEQUENCE_AUTO_REFRESH_INTERVAL_MS\s*=\s*5000/, "sequence refresh should be frequent but not spammy");
+    assert.match(initFn, /startSequenceAutoRefresh\(\)/, "init should start the automatic sequence refresh loop");
+    assert.match(autoFn, /setInterval\([\s\S]*refreshSequence\(\)[\s\S]*SEQUENCE_AUTO_REFRESH_INTERVAL_MS/, "auto refresh should poll the active sequence on an interval");
+    assert.match(autoFn, /document\.addEventListener\("visibilitychange"[\s\S]*refreshSequence\(\)/, "panel should refresh when it becomes visible again");
+    assert.match(autoFn, /window\.addEventListener\("focus"[\s\S]*refreshSequence\(\)/, "panel should refresh when it regains focus");
+    assert.match(autoFn, /isSequenceRefreshAllowed\(\)/, "auto refresh should only run through the idle-state guard");
+});
+
+test("panel does not auto-refresh sequence during analysis or cutting", () => {
+    const main = readProjectFile("client/js/main.js");
+    const guardStart = main.indexOf("function isSequenceRefreshAllowed");
+    assert.notEqual(guardStart, -1, "refresh guard should exist");
+
+    const guardEnd = main.indexOf("\n    function", guardStart + 1);
+    const guardFn = main.slice(guardStart, guardEnd === -1 ? main.length : guardEnd);
+
+    assert.match(guardFn, /isPreparingCuts/, "refresh should pause while FFmpeg prepares cut zones");
+    assert.match(guardFn, /isApplyingCuts/, "refresh should pause while host cutting is running");
+    assert.match(guardFn, /elBtnAnalyze\.disabled/, "refresh should pause while analysis/prerender owns the UI");
+    assert.match(guardFn, /screenStart/, "refresh should only update the start screen track selector");
+});
+
 test("panel keeps rendered WAV until the user leaves the analysis session", () => {
     const main = readProjectFile("client/js/main.js");
     const runStart = main.indexOf("function runAnalysis");
@@ -251,7 +286,7 @@ test("panel deletes rendered WAV only when Apply Cuts completes or is cancelled"
     assert.match(applyFn, /if \(index >= cutChunks\.length\)[\s\S]*cleanupAnalysisSession\(\);[\s\S]*showScreen\("done"\)/, "completed Apply Cuts should delete the rendered WAV");
 });
 
-test("panel passes reduced prerender mode into Premiere export", () => {
+test("panel always passes reduced prerender mode into Premiere export", () => {
     const main = readProjectFile("client/js/main.js");
     const mixdownStart = main.indexOf("function ensureSelectedTrackMixdown");
     const analysisStart = main.indexOf("function runAnalysis");
@@ -263,8 +298,9 @@ test("panel passes reduced prerender mode into Premiere export", () => {
     const analysisEnd = main.indexOf("\n    //", analysisStart + 1);
     const analysisFn = main.slice(analysisStart, analysisEnd === -1 ? main.length : analysisEnd);
 
-    assert.match(main, /elReducedPrerender\s*=\s*document\.getElementById\("reducedPrerender"\)/, "panel should read the reduced prerender checkbox");
-    assert.match(analysisFn, /presetMode\s*=\s*elReducedPrerender\.checked\s*\?\s*"reduced"\s*:\s*"default"/, "Analyze should derive a preset mode from the checkbox");
+    assert.doesNotMatch(main, /document\.getElementById\("reducedPrerender"\)/, "panel should not read a removed reduced prerender checkbox");
+    assert.match(analysisFn, /presetMode\s*=\s*"reduced"/, "Analyze should always use the reduced prerender preset");
+    assert.doesNotMatch(analysisFn, /presetMode\s*=\s*[^;]*\?\s*"reduced"\s*:\s*"default"/, "Analyze should not branch between default and reduced presets");
     assert.match(analysisFn, /ensureSelectedTrackMixdown\(selectedIdx,\s*analysisRangeInfo,\s*presetMode\)/, "Analyze should pass preset mode into mixdown");
     assert.match(mixdownFn, /function ensureSelectedTrackMixdown\(selectedIdx,\s*rangeInfo,\s*presetMode\)/, "mixdown helper should accept preset mode");
     assert.match(mixdownFn, /exportSequenceAudio\([\s\S]*jsxStringArg\(presetMode\)/, "Premiere export call should receive preset mode");

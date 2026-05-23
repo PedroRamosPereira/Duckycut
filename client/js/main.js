@@ -17,6 +17,7 @@
     const csInterface = new CSInterface();
     const APPLY_CUTS_CHUNK_SIZE = 8;
     const APPLY_CUTS_CHUNK_SETTLE_DELAY_MS = 250;
+    const SEQUENCE_AUTO_REFRESH_INTERVAL_MS = 5000;
 
     let silenceDetector = null;
     let vadDetector     = null;
@@ -97,7 +98,6 @@
     const elBtnSavePreset     = document.getElementById("btnSavePreset");
     const elBtnLoadPreset     = document.getElementById("btnLoadPreset");
     const elPresetFileInput   = document.getElementById("presetFileInput");
-    const elReducedPrerender  = document.getElementById("reducedPrerender");
     const elTrackList         = document.getElementById("trackList");
     const elBtnAnalyze        = document.getElementById("btnAnalyze");
     const elResultsSection    = document.getElementById("resultsSection");
@@ -133,7 +133,10 @@
     let vadPaddingLinked = false;
     let isPreparingCuts = false;
     let isApplyingCuts  = false;
+    let isRefreshingSequence = false;
+    let sequenceAutoRefreshTimer = null;
     let applyCancelRequested = false;
+    let activeScreenName = "start";
     let analysisRangeMode = "full";
     let analysisRangeInfo = null;
     let analysisSession = {
@@ -189,6 +192,7 @@
         refreshSequence();
         updateAggroHint();
         showScreen("start");
+        startSequenceAutoRefresh();
 
         if (silenceDetector) {
             setStatus("Ready", "success");
@@ -199,6 +203,7 @@
 
     // ── Sliders ───────────────────────────────────────────────────
     function showScreen(name) {
+        activeScreenName = name;
         var screens = document.querySelectorAll(".screen");
         for (var i = 0; i < screens.length; i++) {
             screens[i].style.display = screens[i].getAttribute("data-screen") === name ? "flex" : "none";
@@ -447,7 +452,6 @@
             paddingLinked:   paddingLinked,
             minClipDuration: parseInt(elMinClipDuration.value, 10),
             minGapFill:      parseInt(elMinGapFill.value, 10),
-            reducedPrerender: elReducedPrerender.checked,
         };
     }
 
@@ -458,7 +462,6 @@
         if (s.paddingOut != null)      { elPaddingOut.value = s.paddingOut; elPaddingOutVal.textContent = s.paddingOut + " ms"; }
         if (s.minClipDuration != null) { elMinClipDuration.value = s.minClipDuration; elMinClipVal.textContent = s.minClipDuration + " ms"; }
         if (s.minGapFill != null)      { elMinGapFill.value = s.minGapFill; elMinGapFillVal.textContent = s.minGapFill + " ms"; }
-        if (s.reducedPrerender != null){ elReducedPrerender.checked = s.reducedPrerender; }
         if (s.paddingLinked != null && s.paddingLinked !== paddingLinked) { togglePaddingLink(); }
     }
 
@@ -568,7 +571,9 @@
 
     // ── Refresh Sequence ─────────────────────────────────────────
     function refreshSequence() {
-        evalScript("getActiveSequenceInfo()").then((result) => {
+        if (isRefreshingSequence) return Promise.resolve();
+        isRefreshingSequence = true;
+        return evalScript("getActiveSequenceInfo()").then((result) => {
             try {
                 if (!result || result === "EvalScript_ErrMessage") {
                     elSequenceName.textContent = "No sequence";
@@ -584,10 +589,47 @@
             } catch (e) {
                 elSequenceName.textContent = "No sequence"; sequenceInfo = null;
             }
+        }).then(function() {
+            isRefreshingSequence = false;
+        }, function(err) {
+            isRefreshingSequence = false;
+            throw err;
+        });
+    }
+
+    function isSequenceRefreshAllowed() {
+        var screenStart = document.getElementById("screenStart");
+        var isStartScreenVisible = activeScreenName === "start" && (!screenStart || screenStart.style.display !== "none");
+        return isStartScreenVisible &&
+            !isPreparingCuts &&
+            !isApplyingCuts &&
+            !(elBtnAnalyze && elBtnAnalyze.disabled);
+    }
+
+    function startSequenceAutoRefresh() {
+        if (sequenceAutoRefreshTimer) return;
+
+        sequenceAutoRefreshTimer = setInterval(function() {
+            if (isSequenceRefreshAllowed()) refreshSequence();
+        }, SEQUENCE_AUTO_REFRESH_INTERVAL_MS);
+
+        document.addEventListener("visibilitychange", function() {
+            if (!document.hidden && isSequenceRefreshAllowed()) refreshSequence();
+        });
+
+        window.addEventListener("focus", function() {
+            if (isSequenceRefreshAllowed()) refreshSequence();
         });
     }
 
     function populateTrackCheckboxes(tracks) {
+        var previousChecked = {};
+        var previousBoxes = document.querySelectorAll(".track-cb");
+        for (var p = 0; p < previousBoxes.length; p++) {
+            previousChecked[String(previousBoxes[p].value)] = previousBoxes[p].checked;
+        }
+        var hasPreviousSelection = previousBoxes.length > 0;
+
         var visibleTracks = (tracks || []).filter(function(t) {
             return t && t.clipCount > 0;
         });
@@ -603,7 +645,9 @@
             cb.type = "checkbox";
             cb.className = "track-cb";
             cb.value = t.index;
-            cb.checked = true;
+            cb.checked = hasPreviousSelection && previousChecked.hasOwnProperty(String(t.index))
+                ? previousChecked[String(t.index)]
+                : true;
             var text = document.createTextNode(t.name + " (" + t.clipCount + " clips)");
             label.appendChild(cb);
             label.appendChild(text);
@@ -902,8 +946,7 @@
 
             updateProgress(10, "Preparing audio for analysis...");
 
-            var presetMode = elReducedPrerender.checked ? "reduced" : "default";
-            if (analysisSession.detectionMode === "vad") presetMode = "reduced";
+            var presetMode = "reduced";
 
             var selectedAudioTracks = buildSelectedAudioTracksForDetection(selectedIdx, sequenceClips, analysisRangeInfo);
             if (selectedAudioTracks.length === 0) {

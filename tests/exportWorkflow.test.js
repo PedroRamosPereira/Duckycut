@@ -137,6 +137,18 @@ test("panel recalculates VAD keep zones from cached timestamps without rerunning
     assert.doesNotMatch(fn, /detectVoiceActivity/, "VAD recompute should not call ONNX again");
 });
 
+test("panel does not apply the manual min clip duration slider to VAD keep zones", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function recomputeVadKeepZones");
+    assert.notEqual(start, -1, "recomputeVadKeepZones should exist");
+
+    const end = main.indexOf("\n    function", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.doesNotMatch(fn, /elMinClipDuration/, "VAD should not inherit the manual 500ms min clip duration slider");
+    assert.match(fn, /minClipDuration:\s*0/, "VAD should leave short-speech filtering to the detector defaults");
+});
+
 test("panel Apply Cuts in VAD mode uses translated keep zones and existing cutter", () => {
     const main = readProjectFile("client/js/main.js");
     const start = main.indexOf("function applyVadCuts");

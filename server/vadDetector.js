@@ -4,6 +4,10 @@ const childProcess = require("child_process");
 
 const DEFAULT_SAMPLE_RATE = 16000;
 const DEFAULT_WINDOW_SIZE = 512;
+const DEFAULT_CONTEXT_SIZE = 64;
+const DEFAULT_THRESHOLD = 0.45;
+const DEFAULT_MIN_SPEECH_DURATION_MS = 150;
+const DEFAULT_SPEECH_PAD_MS = 150;
 const DEFAULT_MODEL_PATH = path.join(__dirname, "models", "silero_vad.onnx");
 
 function readPcm16MonoWav(wavPath) {
@@ -82,9 +86,12 @@ function buildWorkerOptions(opts) {
     return {
         modelPath: opts.modelPath,
         threshold: opts.threshold,
+        negThreshold: opts.negThreshold,
         minSpeechDurationMs: opts.minSpeechDurationMs,
         minSilenceDurationMs: opts.minSilenceDurationMs,
+        speechPadMs: opts.speechPadMs,
         windowSizeSamples: opts.windowSizeSamples,
+        contextSizeSamples: opts.contextSizeSamples,
         allowExternalNodeFallback: false,
     };
 }
@@ -158,11 +165,14 @@ function getStateTensor(outputMap) {
 
 function probabilitiesToSpeechIntervals(probabilities, opts) {
     opts = opts || {};
-    const threshold = opts.threshold == null ? 0.5 : Number(opts.threshold);
+    const threshold = opts.threshold == null ? DEFAULT_THRESHOLD : Number(opts.threshold);
+    const negThreshold = opts.negThreshold == null ? threshold - 0.15 : Number(opts.negThreshold);
     const sampleRate = opts.sampleRate || DEFAULT_SAMPLE_RATE;
     const windowSizeSamples = opts.windowSizeSamples || DEFAULT_WINDOW_SIZE;
-    const minSpeechDuration = (opts.minSpeechDurationMs == null ? 250 : Number(opts.minSpeechDurationMs)) / 1000;
+    const minSpeechDuration = (opts.minSpeechDurationMs == null ? DEFAULT_MIN_SPEECH_DURATION_MS : Number(opts.minSpeechDurationMs)) / 1000;
     const minSilenceDuration = (opts.minSilenceDurationMs == null ? 100 : Number(opts.minSilenceDurationMs)) / 1000;
+    const speechPad = Math.max(0, (opts.speechPadMs == null ? DEFAULT_SPEECH_PAD_MS : Number(opts.speechPadMs)) / 1000);
+    const mediaDuration = opts.mediaDuration == null ? null : Math.max(0, Number(opts.mediaDuration));
     const chunkSeconds = windowSizeSamples / sampleRate;
 
     const intervals = [];
@@ -177,18 +187,36 @@ function probabilitiesToSpeechIntervals(probabilities, opts) {
             lastSpeechEnd = end;
             continue;
         }
+        if (speechStart != null && probabilities[i] >= negThreshold) {
+            lastSpeechEnd = end;
+            continue;
+        }
 
         if (speechStart != null && (start - lastSpeechEnd) >= minSilenceDuration) {
-            if ((lastSpeechEnd - speechStart) >= minSpeechDuration) intervals.push([roundSeconds(speechStart), roundSeconds(lastSpeechEnd)]);
+            addSpeechInterval(intervals, speechStart, lastSpeechEnd, minSpeechDuration, speechPad, mediaDuration);
             speechStart = null;
         }
     }
 
     if (speechStart != null && (lastSpeechEnd - speechStart) >= minSpeechDuration) {
-        intervals.push([roundSeconds(speechStart), roundSeconds(lastSpeechEnd)]);
+        addSpeechInterval(intervals, speechStart, lastSpeechEnd, minSpeechDuration, speechPad, mediaDuration);
     }
 
     return intervals;
+}
+
+function addSpeechInterval(intervals, speechStart, speechEnd, minSpeechDuration, speechPad, mediaDuration) {
+    if ((speechEnd - speechStart) < minSpeechDuration) return;
+    const paddedStart = Math.max(0, speechStart - speechPad);
+    const paddedEnd = mediaDuration == null
+        ? speechEnd + speechPad
+        : Math.min(mediaDuration, speechEnd + speechPad);
+    const last = intervals[intervals.length - 1];
+    if (last && paddedStart <= last[1]) {
+        last[1] = roundSeconds(Math.max(last[1], paddedEnd));
+        return;
+    }
+    intervals.push([roundSeconds(paddedStart), roundSeconds(paddedEnd)]);
 }
 
 function roundSeconds(value) {
@@ -198,15 +226,21 @@ function roundSeconds(value) {
 async function runSileroOnnx(wav, ort, modelPath, opts) {
     const session = await ort.InferenceSession.create(modelPath, { executionProviders: ["cpu"] });
     const windowSizeSamples = opts.windowSizeSamples || DEFAULT_WINDOW_SIZE;
+    const contextSizeSamples = opts.contextSizeSamples == null ? DEFAULT_CONTEXT_SIZE : Number(opts.contextSizeSamples);
+    const inputSizeSamples = windowSizeSamples + Math.max(0, contextSizeSamples);
     const probabilities = [];
     let state = new ort.Tensor("float32", new Float32Array(2 * 1 * 128), [2, 1, 128]);
     const sr = new ort.Tensor("int64", BigInt64Array.from([BigInt(wav.sampleRate)]), []);
+    let context = new Float32Array(Math.max(0, contextSizeSamples));
 
     for (let pos = 0; pos < wav.samples.length; pos += windowSizeSamples) {
         const chunk = new Float32Array(windowSizeSamples);
         chunk.set(wav.samples.subarray(pos, Math.min(pos + windowSizeSamples, wav.samples.length)));
+        const input = new Float32Array(inputSizeSamples);
+        input.set(context, 0);
+        input.set(chunk, context.length);
         const feeds = {
-            input: new ort.Tensor("float32", chunk, [1, windowSizeSamples]),
+            input: new ort.Tensor("float32", input, [1, inputSizeSamples]),
             state,
             sr,
         };
@@ -215,6 +249,7 @@ async function runSileroOnnx(wav, ort, modelPath, opts) {
         const probs = getTensorData(outputs, ["output", "prob", "probability"]);
         probabilities.push(probs && probs.length ? Number(probs[0]) : 0);
         state = getStateTensor(outputs) || state;
+        if (context.length > 0) context.set(chunk.subarray(chunk.length - context.length));
     }
 
     return probabilities;
@@ -239,20 +274,27 @@ async function detectVoiceActivity(wavPath, options) {
     }
     const wav = readPcm16MonoWav(wavPath);
     const windowSizeSamples = opts.windowSizeSamples || DEFAULT_WINDOW_SIZE;
-    const threshold = opts.threshold == null ? 0.5 : Number(opts.threshold);
-    const minSpeechDurationMs = opts.minSpeechDurationMs == null ? 250 : Number(opts.minSpeechDurationMs);
+    const contextSizeSamples = opts.contextSizeSamples == null ? DEFAULT_CONTEXT_SIZE : Number(opts.contextSizeSamples);
+    const threshold = opts.threshold == null ? DEFAULT_THRESHOLD : Number(opts.threshold);
+    const negThreshold = opts.negThreshold == null ? threshold - 0.15 : Number(opts.negThreshold);
+    const minSpeechDurationMs = opts.minSpeechDurationMs == null ? DEFAULT_MIN_SPEECH_DURATION_MS : Number(opts.minSpeechDurationMs);
     const minSilenceDurationMs = opts.minSilenceDurationMs == null ? 100 : Number(opts.minSilenceDurationMs);
+    const speechPadMs = opts.speechPadMs == null ? DEFAULT_SPEECH_PAD_MS : Number(opts.speechPadMs);
 
     const probabilities = opts.probabilities || await runSileroOnnx(wav, ort, modelPath, {
         windowSizeSamples,
+        contextSizeSamples,
     });
 
     const speechIntervals = probabilitiesToSpeechIntervals(probabilities, {
         threshold,
+        negThreshold,
         minSpeechDurationMs,
         minSilenceDurationMs,
+        speechPadMs,
         windowSizeSamples,
         sampleRate: wav.sampleRate,
+        mediaDuration: wav.durationSeconds,
     });
 
     return {
@@ -263,9 +305,12 @@ async function detectVoiceActivity(wavPath, options) {
             model: "silero-vad-onnx",
             modelPath,
             threshold,
+            negThreshold,
             minSpeechDurationMs,
             minSilenceDurationMs,
+            speechPadMs,
             windowSizeSamples,
+            contextSizeSamples,
         },
     };
 }
@@ -276,6 +321,7 @@ module.exports = {
     readPcm16MonoWav,
     _internals: {
         DEFAULT_MODEL_PATH,
+        DEFAULT_CONTEXT_SIZE,
         runSileroOnnx,
         loadOnnxRuntime,
         shouldUseExternalNodeFallback,

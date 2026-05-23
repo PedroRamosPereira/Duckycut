@@ -72,6 +72,7 @@ test("probabilitiesToSpeechIntervals converts chunk probabilities into speech in
             sampleRate: 16000,
             minSpeechDurationMs: 1,
             minSilenceDurationMs: 1,
+            speechPadMs: 0,
         }
     );
 
@@ -79,6 +80,92 @@ test("probabilitiesToSpeechIntervals converts chunk probabilities into speech in
         [0.032, 0.096],
         [0.16, 0.192],
     ]);
+});
+
+test("probabilitiesToSpeechIntervals keeps speech open until probabilities cross negThreshold", () => {
+    const intervals = probabilitiesToSpeechIntervals(
+        [0.8, 0.42, 0.39, 0.34],
+        {
+            threshold: 0.5,
+            windowSizeSamples: 1600,
+            sampleRate: 16000,
+            minSpeechDurationMs: 1,
+            minSilenceDurationMs: 1,
+            speechPadMs: 0,
+        }
+    );
+
+    assert.deepEqual(intervals, [[0, 0.3]]);
+});
+
+test("probabilitiesToSpeechIntervals applies Silero-style speech padding before returning intervals", () => {
+    const intervals = probabilitiesToSpeechIntervals(
+        [0.8, 0.8, 0.1],
+        {
+            threshold: 0.5,
+            windowSizeSamples: 1600,
+            sampleRate: 16000,
+            minSpeechDurationMs: 1,
+            minSilenceDurationMs: 1,
+            speechPadMs: 30,
+            mediaDuration: 1,
+        }
+    );
+
+    assert.deepEqual(intervals, [[0, 0.23]]);
+});
+
+test("probabilitiesToSpeechIntervals uses VAD editing defaults that preserve speech edges", () => {
+    const intervals = probabilitiesToSpeechIntervals(
+        [0.46, 0.46, 0.1],
+        {
+            windowSizeSamples: 1600,
+            sampleRate: 16000,
+            mediaDuration: 1,
+        }
+    );
+
+    assert.deepEqual(intervals, [[0, 0.35]]);
+});
+
+test("runSileroOnnx feeds the model with official Silero context samples", async () => {
+    const { _internals } = require("../server/vadDetector");
+    const inputLengths = [];
+    const stateDims = [];
+    const fakeOrt = {
+        Tensor: class Tensor {
+            constructor(type, data, dims) {
+                this.type = type;
+                this.data = data;
+                this.dims = dims;
+            }
+        },
+        InferenceSession: {
+            create: async () => ({
+                run: async feeds => {
+                    inputLengths.push(feeds.input.dims[1]);
+                    stateDims.push(feeds.state.dims.join("x"));
+                    return {
+                        output: new fakeOrt.Tensor("float32", new Float32Array([0.1]), [1, 1]),
+                        stateN: feeds.state,
+                    };
+                },
+            }),
+        },
+    };
+
+    await _internals.runSileroOnnx(
+        {
+            sampleRate: 16000,
+            samples: new Float32Array(1024),
+        },
+        fakeOrt,
+        "unused.onnx",
+        { windowSizeSamples: 512 }
+    );
+
+    assert.deepEqual(inputLengths, [576, 576]);
+    assert.deepEqual(stateDims, ["2x1x128", "2x1x128"]);
 });
 
 test("detectVoiceActivity returns a friendly error when ONNX runtime is unavailable", async () => {

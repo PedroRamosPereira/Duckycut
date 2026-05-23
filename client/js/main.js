@@ -396,7 +396,7 @@
             {
                 paddingIn: parseInt(elVadPaddingIn.value, 10) / 1000,
                 paddingOut: parseInt(elVadPaddingOut.value, 10) / 1000,
-                minClipDuration: parseInt(elMinClipDuration.value, 10) / 1000,
+                minClipDuration: 0,
                 minGapDuration: parseInt(elMinGapFill.value, 10) / 1000,
             }
         );

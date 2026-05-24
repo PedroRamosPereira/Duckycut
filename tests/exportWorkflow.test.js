@@ -262,7 +262,7 @@ test("panel keeps rendered WAV until the user leaves the analysis session", () =
     assert.match(runFn, /analysisSession\.renderedMixPath\s*=\s*renderedMixPath/, "Analyze should remember the rendered WAV path");
 });
 
-test("panel deletes rendered WAV only when Apply Cuts completes or is cancelled", () => {
+test("panel deletes rendered WAV when the user leaves the analysis session", () => {
     const main = readProjectFile("client/js/main.js");
     const returnStart = main.indexOf("function returnToStart");
     const applyStart = main.indexOf("function applyCutsInPlaceFromPanel");
@@ -279,11 +279,22 @@ test("panel deletes rendered WAV only when Apply Cuts completes or is cancelled"
     const runFn = main.slice(runStart, runFnEnd === -1 ? main.length : runFnEnd);
 
     const cleanupCalls = main.match(/cleanupAnalysisSession\(\);/g) || [];
-    assert.equal(cleanupCalls.length, 2, "cleanup should have exactly two approved call sites");
-    assert.doesNotMatch(runFn, /cleanupAnalysisSession\(\);/, "analysis should not delete the rendered WAV");
-    assert.doesNotMatch(returnFn, /cleanupAnalysisSession\(\);/, "returning to the start should not delete the rendered WAV under the Apply Cuts lifecycle rule");
+    assert.equal(cleanupCalls.length, 4, "cleanup should have exactly four approved call sites");
+    assert.match(runFn, /\.catch\(function\(err\)[\s\S]*cleanupAnalysisSession\(\);/, "failed analysis should delete any partial rendered WAV");
+    assert.match(returnFn, /cleanupAnalysisSession\(\);/, "returning to the start should end the analysis session and delete the rendered WAV");
     assert.match(applyFn, /function finishCancelled[\s\S]*cleanupAnalysisSession\(\);/, "cancelled Apply Cuts should delete the rendered WAV");
     assert.match(applyFn, /if \(index >= cutChunks\.length\)[\s\S]*cleanupAnalysisSession\(\);[\s\S]*showScreen\("done"\)/, "completed Apply Cuts should delete the rendered WAV");
+});
+
+test("panel Analyze returns to an actionable screen after prerender or VAD errors", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function runAnalysis");
+    assert.notEqual(start, -1, "runAnalysis should exist");
+
+    const end = main.indexOf("\n    function prepareCutZonesFromCurrentConfig", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /\.catch\(function\(err\)[\s\S]*cleanupAnalysisSession\(\);[\s\S]*showScreen\("start"\)/, "Analyze errors should clean partial session state and return to start");
 });
 
 test("panel always passes reduced prerender mode into Premiere export", () => {
@@ -826,6 +837,18 @@ test("panel Apply uses sequence duration after Premiere-rendered detection", () 
     assert.match(fn, /result\.mediaDuration\s*=\s*mediaDuration/, "result duration should be normalized before showResults and Apply Cuts");
 });
 
+test("panel VAD In-Out removal estimate uses the analyzed range duration", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function recomputeVadKeepZones");
+    assert.notEqual(start, -1, "recomputeVadKeepZones should exist");
+
+    const end = main.indexOf("\n    function", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /var fullDuration\s*=\s*duration/, "VAD estimate should start from the local analysis duration");
+    assert.doesNotMatch(fn, /var fullDuration\s*=\s*\(seqSettings\s*&&\s*seqSettings\.durationSeconds\)\s*\|\|\s*duration/, "In-Out VAD estimate must not let full sequence duration override the range");
+});
+
 test("panel clamps Apply cut zones to analyzed In-Out range", () => {
     const main = readProjectFile("client/js/main.js");
     const start = main.indexOf("function applyCutsInPlaceFromPanel");
@@ -837,6 +860,18 @@ test("panel clamps Apply cut zones to analyzed In-Out range", () => {
     assert.match(fn, /intersectIntervalsWithRange(?:ForApply)?\(/, "Apply should clamp cut zones to In-Out range");
     assert.match(fn, /analysisRangeInfo/, "Apply should use range captured during Analyze");
     assert.match(fn, /range:/, "Apply should pass range to host opts");
+});
+
+test("panel Apply Cuts host errors return to the configuration screen", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function applyCutsInPlaceFromPanel");
+    assert.notEqual(start, -1, "applyCutsInPlaceFromPanel should exist");
+
+    const end = main.indexOf("\n    // â”€â”€ UI Helpers", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    assert.match(fn, /if \(!data\.success\)[\s\S]*setStatus\([\s\S]*showScreen\("config"\)/, "host success:false should return the user to config for recovery");
+    assert.match(fn, /\.catch\(function \(err\)[\s\S]*setStatus\([\s\S]*showScreen\("config"\)/, "host eval errors should return the user to config for recovery");
 });
 
 test("host applyCutsInPlace ignores zones outside opts.range", () => {
@@ -988,3 +1023,10 @@ test("host only deletes post-razor segments whose boundaries match the cut zone"
     assert.match(fn, /boundaryMatch/, "diagnostics should show whether a candidate matched both razor boundaries");
 });
 
+test("Node server does not expose the legacy FCP7 XML generator endpoint", () => {
+    const server = readProjectFile("server/index.js");
+
+    assert.doesNotMatch(server, /require\("\.\/xmlGenerator"\)/, "server should not load the legacy XML generator");
+    assert.doesNotMatch(server, /\/generate-xml/, "server should not expose the legacy XML endpoint");
+    assert.doesNotMatch(server, /generateFCP7XML\(/, "server should not call the legacy XML generator");
+});

@@ -224,6 +224,7 @@
     }
 
     function returnToStart() {
+        cleanupAnalysisSession();
         analysisResult = null;
         keepZones = null;
         analysisRangeInfo = null;
@@ -416,7 +417,7 @@
         for (var i = 0; i < analysisSession.vadKeepZones.length; i++) {
             totalKept += analysisSession.vadKeepZones[i][1] - analysisSession.vadKeepZones[i][0];
         }
-        var fullDuration = (seqSettings && seqSettings.durationSeconds) || duration;
+        var fullDuration = duration;
         var localCutZones = translator.computeCutZonesFromKeepZones
             ? translator.computeCutZonesFromKeepZones(localKeepZones, duration)
             : [];
@@ -978,6 +979,11 @@
                 })
                 .catch(function(err) {
                     setStatus("Prerender error: " + (err.message || "unknown"), "error");
+                    cleanupAnalysisSession();
+                    analysisResult = null;
+                    keepZones = null;
+                    analysisRangeInfo = null;
+                    showScreen("start");
                     hideProgress(); elBtnAnalyze.disabled = false;
                 });
         });
@@ -1388,7 +1394,7 @@
                             error: e.message
                         });
                         setStatus("Cut parse error: " + e.message + " :: raw=" + raw + (logPath ? " | Log: " + logPath : ""), "error");
-                        hideProgress(); endApplyCancelMode();
+                        hideProgress(); endApplyCancelMode(); showScreen("config");
                         return;
                     }
 
@@ -1416,7 +1422,7 @@
                     }
                     if (!data.success) {
                         setStatus("Cut error: " + (data.error || "unknown") + (logPath ? " | Log: " + logPath : ""), "error");
-                        hideProgress(); endApplyCancelMode();
+                        hideProgress(); endApplyCancelMode(); showScreen("config");
                         return;
                     }
 
@@ -1432,7 +1438,7 @@
                         error: err && err.message ? err.message : "unknown"
                     });
                     setStatus("Cut error: " + (err.message || "unknown") + (logPath ? " | Log: " + logPath : ""), "error");
-                    hideProgress(); endApplyCancelMode();
+                    hideProgress(); endApplyCancelMode(); showScreen("config");
                 });
         }
 

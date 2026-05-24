@@ -36,7 +36,11 @@ function probeAudio(mediaPath) {
         proc.stdout.on("data", (d) => (output += d.toString()));
         proc.stderr.on("data",  (d) => (output += d.toString()));
         proc.on("error", (err) => reject(new Error(`FFmpeg probe failed: ${err.message}`)));
-        proc.on("close", () => {
+        proc.on("close", (code) => {
+            if (code !== 0) {
+                reject(new Error(`FFmpeg probe exited with code ${code}. Output: ${output.slice(-500)}`));
+                return;
+            }
             const meanMatch = output.match(/mean_volume:\s*(-?\d+\.?\d*)\s*dB/);
             const maxMatch  = output.match(/max_volume:\s*(-?\d+\.?\d*)\s*dB/);
             const meanVolume = meanMatch ? parseFloat(meanMatch[1]) : -30;

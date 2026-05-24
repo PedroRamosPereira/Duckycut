@@ -1,11 +1,10 @@
 /**
  * Duckycut - Node.js Backend Server
- * Runs on port 3847. Handles FFmpeg silence detection and FCP7 XML generation.
+ * Runs on port 3847. Handles FFmpeg silence detection.
  */
 
 const http = require("http");
 const { detectSilence } = require("./silenceDetector");
-const { generateFCP7XML } = require("./xmlGenerator");
 
 const PORT = 3847;
 
@@ -65,46 +64,6 @@ const server = http.createServer(async (req, res) => {
             );
 
             sendJSON(res, 200, result);
-            return;
-        }
-
-        // Generate FCP7 XML from keep zones
-        if (req.method === "POST" && req.url === "/generate-xml") {
-            const params = await parseBody(req);
-            const {
-                keepZones,
-                mediaPath,
-                sequenceName,
-                framerate,
-                width,
-                height,
-                audioSampleRate,
-                durationSeconds,
-                outputPath,
-                audioTrackCount,
-            } = params;
-
-            if (!keepZones || !mediaPath || !outputPath) {
-                sendJSON(res, 400, {
-                    error: "keepZones, mediaPath, and outputPath are required",
-                });
-                return;
-            }
-
-            const xmlPath = generateFCP7XML({
-                keepZones,
-                mediaPath,
-                sequenceName: sequenceName || "Duckycut Sequence",
-                framerate: framerate || 29.97,
-                width: width || 1920,
-                height: height || 1080,
-                audioSampleRate: audioSampleRate || 48000,
-                durationSeconds: durationSeconds || 0,
-                outputPath,
-                audioTrackCount: audioTrackCount || 1,
-            });
-
-            sendJSON(res, 200, { success: true, xmlPath });
             return;
         }
 

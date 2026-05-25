@@ -443,21 +443,6 @@ test("host restoreAudioTrackMutes restores saved states with Premiere numeric mu
     assert.match(fn, /Mute restore verification failed/, "restore should report when Premiere refuses the original state");
 });
 
-test("panel Auto Detect probes the selected-track mix instead of only the first selected track", () => {
-    const main = readProjectFile("client/js/main.js");
-    const start = main.indexOf("function runProbe");
-    assert.notEqual(start, -1, "runProbe should exist");
-
-    const end = main.indexOf("\n    // ── Run Analysis", start + 1);
-    const fn = main.slice(start, end === -1 ? main.length : end);
-
-    assert.match(fn, /getFullSequenceClips\(/, "runProbe should read sequence clips for all selected tracks");
-    assert.match(fn, /buildSelectedAudioTracksForDetection\(selectedForProbe/, "runProbe should reuse selected-track filtering");
-    assert.match(fn, /probeAudioFromSequence\(/, "runProbe should probe a mix built from all selected tracks");
-    assert.doesNotMatch(fn, /getAudioTrackMediaPath\(/, "runProbe should not collapse calibration to the first selected track");
-    assert.doesNotMatch(fn, /selectedForProbe\[0\]/, "runProbe should not index only the first selected track");
-});
-
 test("host applyCutsInPlace removes clips using ticks instead of Premiere seconds floats", () => {
     const host = readProjectFile("host/index.jsx");
     const start = host.indexOf("function applyCutsInPlace");
@@ -1023,10 +1008,7 @@ test("host only deletes post-razor segments whose boundaries match the cut zone"
     assert.match(fn, /boundaryMatch/, "diagnostics should show whether a candidate matched both razor boundaries");
 });
 
-test("Node server does not expose the legacy FCP7 XML generator endpoint", () => {
-    const server = readProjectFile("server/index.js");
-
-    assert.doesNotMatch(server, /require\("\.\/xmlGenerator"\)/, "server should not load the legacy XML generator");
-    assert.doesNotMatch(server, /\/generate-xml/, "server should not expose the legacy XML endpoint");
-    assert.doesNotMatch(server, /generateFCP7XML\(/, "server should not call the legacy XML generator");
+test("legacy HTTP and FCP7 XML paths are not shipped", () => {
+    assert.equal(fs.existsSync(path.join(root, "server/index.js")), false, "legacy HTTP server should not be part of the installer payload");
+    assert.equal(fs.existsSync(path.join(root, "server/xmlGenerator.js")), false, "legacy FCP7 XML generator should not be part of the installer payload");
 });

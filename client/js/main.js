@@ -73,12 +73,6 @@
     // ── DOM elements ─────────────────────────────────────────────
     const elSequenceName      = document.getElementById("sequenceName");
     const elBtnRefreshSeq     = document.getElementById("btnRefreshSeq");
-    const elBtnProbe          = document.getElementById("btnProbe");
-    const elVolumeIdle        = document.getElementById("volumeIdle");
-    const elVolumeStats       = document.getElementById("volumeStats");
-    const elVolMean           = document.getElementById("volMean");
-    const elVolMax            = document.getElementById("volMax");
-    const elVolChannels       = document.getElementById("volChannels");
     const elAggressiveness    = document.getElementById("aggressiveness");
     const elAggressivenessVal = document.getElementById("aggressivenessVal");
     const elAggroThresholdHint= document.getElementById("aggroThresholdHint");
@@ -95,9 +89,6 @@
     const elBtnLinkPadding    = document.getElementById("btnLinkPadding");
     const elBtnAdvancedToggle = document.getElementById("btnAdvancedToggle");
     const elAdvancedSettings  = document.getElementById("advancedSettings");
-    const elBtnSavePreset     = document.getElementById("btnSavePreset");
-    const elBtnLoadPreset     = document.getElementById("btnLoadPreset");
-    const elPresetFileInput   = document.getElementById("presetFileInput");
     const elTrackList         = document.getElementById("trackList");
     const elBtnAnalyze        = document.getElementById("btnAnalyze");
     const elResultsSection    = document.getElementById("resultsSection");
@@ -127,7 +118,6 @@
     let sequenceClips   = null;   // from getFullSequenceClips() — all tracks
     let analysisResult  = null;
     let keepZones       = null;
-    let probeResult     = null;   // { meanVolume, maxVolume, channelCount }
     let seqSettings     = null;   // from getSequenceSettings()
     let paddingLinked   = false;  // whether Padding In/Out are synced
     let vadPaddingLinked = false;
@@ -297,10 +287,6 @@
     // ── Aggressiveness → threshold ────────────────────────────────
     function computeThreshold(aggressiveness) {
         var a = parseInt(aggressiveness, 10);
-        if (probeResult) {
-            var offset = 15 - (a * 13 / 100);
-            return Math.round(probeResult.meanVolume - offset);
-        }
         return Math.round(-50 + a * 35 / 100);
     }
 
@@ -313,7 +299,6 @@
     // ── Buttons ───────────────────────────────────────────────────
     function bindButtons() {
         if (elBtnRefreshSeq) elBtnRefreshSeq.addEventListener("click", refreshSequence);
-        if (elBtnProbe) elBtnProbe.addEventListener("click", runProbe);
         if (elBtnAnalyze) elBtnAnalyze.addEventListener("click", runAnalysis);
         if (elBtnApply) elBtnApply.addEventListener("click", applyCuts);
         if (elBtnCancelApply) elBtnCancelApply.addEventListener("click", cancelApplyCutsFromPanel);
@@ -324,9 +309,6 @@
         if (elBtnVadLinkPadding) elBtnVadLinkPadding.addEventListener("click", toggleVadPaddingLink);
         if (elBtnApplyVadPlaceholder) elBtnApplyVadPlaceholder.addEventListener("click", applyVadCuts);
         if (elBtnAdvancedToggle) elBtnAdvancedToggle.addEventListener("click", toggleAdvanced);
-        if (elBtnSavePreset) elBtnSavePreset.addEventListener("click", savePreset);
-        if (elBtnLoadPreset && elPresetFileInput) elBtnLoadPreset.addEventListener("click", () => elPresetFileInput.click());
-        if (elPresetFileInput) elPresetFileInput.addEventListener("change", loadPreset);
     }
 
     function toggleAdvanced() {
@@ -441,110 +423,6 @@
             });
     }
 
-    // ── Presets ───────────────────────────────────────────────────
-    function gatherSettings() {
-        return {
-            duckycut_preset: true,
-            version: 1,
-            aggressiveness:  parseInt(elAggressiveness.value, 10),
-            minDuration:     parseInt(elMinDuration.value, 10),
-            paddingIn:       parseInt(elPaddingIn.value, 10),
-            paddingOut:      parseInt(elPaddingOut.value, 10),
-            paddingLinked:   paddingLinked,
-            minClipDuration: parseInt(elMinClipDuration.value, 10),
-            minGapFill:      parseInt(elMinGapFill.value, 10),
-        };
-    }
-
-    function applySettings(s) {
-        if (s.aggressiveness != null)  { elAggressiveness.value = s.aggressiveness; elAggressivenessVal.textContent = s.aggressiveness; updateAggroHint(); }
-        if (s.minDuration != null)     { elMinDuration.value = s.minDuration; elMinDurationVal.textContent = s.minDuration + " ms"; }
-        if (s.paddingIn != null)       { elPaddingIn.value = s.paddingIn; elPaddingInVal.textContent = s.paddingIn + " ms"; }
-        if (s.paddingOut != null)      { elPaddingOut.value = s.paddingOut; elPaddingOutVal.textContent = s.paddingOut + " ms"; }
-        if (s.minClipDuration != null) { elMinClipDuration.value = s.minClipDuration; elMinClipVal.textContent = s.minClipDuration + " ms"; }
-        if (s.minGapFill != null)      { elMinGapFill.value = s.minGapFill; elMinGapFillVal.textContent = s.minGapFill + " ms"; }
-        if (s.paddingLinked != null && s.paddingLinked !== paddingLinked) { togglePaddingLink(); }
-    }
-
-    function savePreset() {
-        if (!nodeRequire) { setStatus("Node.js not available — cannot save", "error"); return; }
-
-        var settings = gatherSettings();
-        var json = JSON.stringify(settings, null, 2);
-        var fileName = "duckycut_preset_" + Date.now() + ".json";
-
-        // Save next to the Premiere project file, or fallback to user Desktop
-        evalScript("getProjectPath()").then(function (r) {
-            var saveDir = null;
-            try { var pd = JSON.parse(r); saveDir = pd.projectDir || null; } catch (e) {}
-
-            if (!saveDir) {
-                try { saveDir = nodeRequire("os").homedir() + "/Desktop"; } catch (e) {}
-            }
-            if (!saveDir) { setStatus("Could not determine save location", "error"); return; }
-
-            var nPath = nodeRequire("path");
-            var nFs   = nodeRequire("fs");
-            var fullPath = nPath.join(saveDir.replace(/\//g, nPath.sep), fileName);
-
-            try {
-                nFs.writeFileSync(fullPath, json, "utf8");
-                setStatusWithPath("Saved: ", fullPath, "success");
-            } catch (err) {
-                setStatus("Save error: " + err.message, "error");
-            }
-        });
-    }
-
-    function setStatusWithPath(prefix, fullPath, type) {
-        elStatusBar.className = "status-bar" + (type ? " " + type : "");
-        elStatusBar.textContent = "";
-
-        var prefixNode = document.createTextNode(prefix);
-        var link = document.createElement("a");
-        link.className = "status-link";
-        link.href = "#";
-        link.textContent = fullPath.replace(/\\/g, "/");
-        link.title = "Click to reveal in file explorer";
-        link.addEventListener("click", function (ev) {
-            ev.preventDefault();
-            revealInExplorer(fullPath);
-        });
-
-        elStatusBar.appendChild(prefixNode);
-        elStatusBar.appendChild(link);
-    }
-
-    function revealInExplorer(fullPath) {
-        if (!nodeRequire) { setStatus("Node.js not available", "error"); return; }
-        try {
-            var child = nodeRequire("child_process");
-            var nativePath = fullPath.replace(/\//g, "\\");
-            // Windows: /select, highlights the file in Explorer
-            child.exec('explorer /select,"' + nativePath + '"');
-        } catch (err) {
-            setStatus("Could not open explorer: " + err.message, "error");
-        }
-    }
-
-    function loadPreset(e) {
-        var file = e.target.files[0];
-        if (!file) return;
-        var reader = new FileReader();
-        reader.onload = function (ev) {
-            try {
-                var s = JSON.parse(ev.target.result);
-                if (!s.duckycut_preset) { setStatus("Invalid preset file", "error"); return; }
-                applySettings(s);
-                setStatus("Preset loaded: " + file.name, "success");
-            } catch (err) {
-                setStatus("Failed to parse preset: " + err.message, "error");
-            }
-        };
-        reader.readAsText(file);
-        elPresetFileInput.value = "";
-    }
-
     function evalScript(script) {
         return new Promise((resolve) => csInterface.evalScript(script, resolve));
     }
@@ -653,59 +531,6 @@
             label.appendChild(cb);
             label.appendChild(text);
             elTrackList.appendChild(label);
-        });
-    }
-
-    // ── Auto Detect Volume ────────────────────────────────────────
-    function runProbe() {
-        if (!silenceDetector || !silenceDetector.probeAudioFromSequence) {
-            setStatus("probeAudio not available", "error"); return;
-        }
-        if (!sequenceInfo) {
-            setStatus("No active sequence", "error"); return;
-        }
-
-        elBtnProbe.disabled = true;
-        elBtnProbe.textContent = "Detecting...";
-        setStatus("Probing audio volume...", "");
-
-        var selectedForProbe = getSelectedTrackIndices();
-        if (selectedForProbe.length === 0) {
-            setStatus("Select at least one audio track", "error");
-            elBtnProbe.disabled = false;
-            elBtnProbe.textContent = "Auto Detect";
-            return;
-        }
-        evalScript("getFullSequenceClips()").then(function(r) {
-            var clips = null;
-            try { clips = JSON.parse(r); } catch(e) { clips = null; }
-
-            var selectedAudioTracks = buildSelectedAudioTracksForDetection(selectedForProbe, clips, null);
-            if (selectedAudioTracks.length === 0) {
-                setStatus("No audio clips found in selected tracks", "error");
-                elBtnProbe.disabled = false;
-                elBtnProbe.textContent = "Auto Detect";
-                return;
-            }
-
-            silenceDetector.probeAudioFromSequence(selectedAudioTracks)
-                .then((result) => {
-                    probeResult = result;
-                    elVolumeIdle.style.display  = "none";
-                    elVolumeStats.style.display = "flex";
-                    elVolMean.textContent     = result.meanVolume.toFixed(1) + " dB";
-                    elVolMax.textContent      = result.maxVolume.toFixed(1)  + " dB";
-                    elVolChannels.textContent = result.channelCount;
-                    updateAggroHint();
-                    setStatus("Volume detected — threshold calibrated", "success");
-                    elBtnProbe.disabled = false;
-                    elBtnProbe.textContent = "Re-Detect";
-                })
-                .catch((err) => {
-                    setStatus("Probe error: " + err.message, "error");
-                    elBtnProbe.disabled = false;
-                    elBtnProbe.textContent = "Auto Detect";
-                });
         });
     }
 

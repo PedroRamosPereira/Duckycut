@@ -24,7 +24,7 @@ test("parseFfmpegDuration handles ffmpeg durations with two fractional digits", 
     assert.equal(parseFfmpegDuration(output), 3723.45);
 });
 
-test("probeAudioFromSequence is exported for selected-track calibration", () => {
+test("probeAudioFromSequence remains available for selected-track diagnostics", () => {
     assert.equal(typeof probeAudioFromSequence, "function");
 });
 

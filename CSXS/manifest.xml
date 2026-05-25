@@ -45,9 +45,6 @@
                             <Height>400</Height>
                         </MinSize>
                     </Geometry>
-                    <Icons>
-                        <Icon Type="Normal">./client/icon.png</Icon>
-                    </Icons>
                 </UI>
             </DispatchInfo>
         </Extension>

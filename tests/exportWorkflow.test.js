@@ -1012,3 +1012,10 @@ test("legacy HTTP and FCP7 XML paths are not shipped", () => {
     assert.equal(fs.existsSync(path.join(root, "server/index.js")), false, "legacy HTTP server should not be part of the installer payload");
     assert.equal(fs.existsSync(path.join(root, "server/xmlGenerator.js")), false, "legacy FCP7 XML generator should not be part of the installer payload");
 });
+
+test("panel formatTime rounds total seconds before splitting minutes", () => {
+    const main = readProjectFile("client/js/main.js");
+
+    assert.match(main, /var total = Math\.max\(0, Math\.round\(seconds\)\);/, "formatTime should round total seconds once");
+    assert.doesNotMatch(main, /Math\.round\(seconds % 60\)/, "formatTime must not round the remainder into a 60s label");
+});

@@ -1288,8 +1288,9 @@
         elStatusBar.className = "status-bar" + (type ? " " + type : "");
     }
     function formatTime(seconds) {
-        var m = Math.floor(seconds / 60);
-        var s = Math.round(seconds % 60);
+        var total = Math.max(0, Math.round(seconds));
+        var m = Math.floor(total / 60);
+        var s = total % 60;
         return m + "m " + s + "s";
     }
 

@@ -44,6 +44,12 @@ test("parseSilenceOutput still pairs matched start/end markers", () => {
     assert.deepEqual(parseSilenceOutput(output, 60), [[1.25, 2.5]]);
 });
 
+test("formatTime rounds 119.6s to 2m 0s, never 1m 60s", () => {
+    assert.equal(formatTime(119.6), "2m 0s");
+    assert.equal(formatTime(59.6), "1m 0s");
+    assert.equal(formatTime(59.4), "0m 59s");
+});
+
 test("probeAudio rejects when FFmpeg exits with a non-zero code", () => {
     const source = readProjectFile("server/silenceDetector.js");
     const start = source.indexOf("function probeAudio");

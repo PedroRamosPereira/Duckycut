@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { parseFfmpegDuration, probeAudioFromSequence } = require("../server/silenceDetector.js");
+const { parseFfmpegDuration, probeAudioFromSequence, parseSilenceOutput, formatTime } = require("../server/silenceDetector.js");
 
 const root = path.resolve(__dirname, "..");
 
@@ -26,6 +26,22 @@ test("parseFfmpegDuration handles ffmpeg durations with two fractional digits", 
 
 test("probeAudioFromSequence remains available for selected-track diagnostics", () => {
     assert.equal(typeof probeAudioFromSequence, "function");
+});
+
+test("parseSilenceOutput closes a trailing unterminated silence at media duration", () => {
+    const output = "silence_start: 50.5\n";
+
+    assert.deepEqual(parseSilenceOutput(output, 60), [[50.5, 60]]);
+});
+
+test("parseSilenceOutput keeps the one-second fallback when duration is unknown", () => {
+    assert.deepEqual(parseSilenceOutput("silence_start: 50.5\n", 0), [[50.5, 51.5]]);
+});
+
+test("parseSilenceOutput still pairs matched start/end markers", () => {
+    const output = "silence_start: 1.25\nsilence_end: 2.5 | silence_duration: 1.25\n";
+
+    assert.deepEqual(parseSilenceOutput(output, 60), [[1.25, 2.5]]);
 });
 
 test("probeAudio rejects when FFmpeg exits with a non-zero code", () => {

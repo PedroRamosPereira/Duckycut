@@ -96,8 +96,8 @@ function detectSilence(mediaPath, thresholdDb, minDuration) {
                 reject(new Error(`FFmpeg exited with code ${code}. Output: ${output.slice(-200)}`));
                 return;
             }
-            const silenceIntervals = parseSilenceOutput(output);
             const mediaDuration = parseFfmpegDuration(output);
+            const silenceIntervals = parseSilenceOutput(output, mediaDuration);
             let totalSilenceDuration = 0;
             for (const iv of silenceIntervals) totalSilenceDuration += iv[1] - iv[0];
             resolve({
@@ -271,7 +271,7 @@ function collectSequenceAudioClips(audioTracks) {
     return clips;
 }
 
-function parseSilenceOutput(output) {
+function parseSilenceOutput(output, mediaDuration) {
     const starts = [];
     const ends   = [];
     const startRe = /silence_start:\s*(-?\d+\.?\d*)/g;
@@ -281,7 +281,12 @@ function parseSilenceOutput(output) {
     while ((m = endRe.exec(output))   !== null) ends.push(parseFloat(m[1]));
     const intervals = [];
     for (let i = 0; i < starts.length; i++) {
-        const end = i < ends.length ? ends[i] : starts[i] + 1;
+        // FFmpeg may end the stream without emitting the final silence_end;
+        // that trailing silence runs until the end of the media.
+        let end;
+        if (i < ends.length) end = ends[i];
+        else if (typeof mediaDuration === "number" && mediaDuration > starts[i]) end = mediaDuration;
+        else end = starts[i] + 1;
         intervals.push([starts[i], end]);
     }
     return intervals;
@@ -293,4 +298,4 @@ function formatTime(seconds) {
     return `${m}m ${s}s`;
 }
 
-module.exports = { detectSilence, probeAudio, probeAudioFromSequence, detectSilenceFromSequence, buildMixedAudio, parseFfmpegDuration };
+module.exports = { detectSilence, probeAudio, probeAudioFromSequence, detectSilenceFromSequence, buildMixedAudio, parseFfmpegDuration, parseSilenceOutput, formatTime };

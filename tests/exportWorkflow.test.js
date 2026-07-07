@@ -1056,3 +1056,16 @@ test("panel results derive time saved from the analysis window", () => {
     assert.match(main, /function showResults\(analysis, zones, wasRendered, windowDurationSeconds\)/, "showResults should receive the analysis window duration");
     assert.match(main, /showResults\(result, keepZones, true, analysisWindowDuration\)/, "In-Out results must be computed against the analyzed window, not the full sequence");
 });
+
+test("host apply cuts refuses to resync onto a different sequence", () => {
+    const host = readProjectFile("host/index.jsx");
+    const start = host.indexOf("function applyCutsInPlace(");
+    assert.notEqual(start, -1, "applyCutsInPlace should exist");
+    const end = host.indexOf("function applyCutsInPlaceFile(", start + 1);
+    const fn = host.slice(start, end === -1 ? host.length : end);
+
+    assert.match(fn, /function _resyncActiveSequence\(/, "guarded resync helper should exist");
+    assert.match(fn, /applySeqId/, "guard should compare against the sequence being cut");
+    assert.doesNotMatch(fn, /refreshedSeq = app\.project\.activeSequence/, "razor refresh resync must go through the sequenceID guard");
+    assert.doesNotMatch(fn, /targetSeq = app\.project\.activeSequence/, "target wait resync must go through the sequenceID guard");
+});

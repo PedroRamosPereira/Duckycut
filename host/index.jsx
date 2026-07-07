@@ -811,6 +811,25 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
         var seq = app.project.activeSequence;
         if (!seq) return '{"success":false,"error":"No active sequence"}';
 
+        // If the user switches sequences mid-apply, resyncing from
+        // app.project.activeSequence would collect and delete clips from the
+        // wrong timeline. Every resync must go through this guard.
+        var applySeqId = "";
+        try { applySeqId = String(seq.sequenceID); } catch (eSeqIdInit) {}
+
+        function _resyncActiveSequence(current) {
+            try {
+                var cand = app.project.activeSequence;
+                if (!cand) return current;
+                if (applySeqId) {
+                    var candId = "";
+                    try { candId = String(cand.sequenceID); } catch (eCandId) {}
+                    if (candId !== applySeqId) return current;
+                }
+                return cand;
+            } catch (eResyncGuard) { return current; }
+        }
+
         var zones = [];
         var opts  = {};
         try { zones = eval("(" + cutZonesJson + ")") || []; } catch (e) {
@@ -1113,7 +1132,7 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
             for (var wr = 0; wr < 10; wr++) {
                 attempts++;
                 try { $.sleep(40); } catch(eSleep) {}
-                try { refreshedSeq = app.project.activeSequence; } catch(eResync) {}
+                refreshedSeq = _resyncActiveSequence(refreshedSeq);
                 counts = _countTimelineClips(refreshedSeq);
                 targets = _collectZoneContainedClipTargets(refreshedSeq, zoneStartTicks, zoneEndTicks, null);
                 if (targets.total > 0) break;
@@ -1129,7 +1148,7 @@ function applyCutsInPlace(cutZonesJson, optsJson) {
             var attempts = 0;
             for (var wt = 0; wt < 12; wt++) {
                 attempts++;
-                try { targetSeq = app.project.activeSequence; } catch(eTargetResync) {}
+                targetSeq = _resyncActiveSequence(targetSeq);
                 targetCounts = _countTimelineClips(targetSeq);
                 targets = _collectZoneContainedClipTargets(targetSeq, zoneStartTicks, zoneEndTicks, null);
                 if (targets.total > 0) break;

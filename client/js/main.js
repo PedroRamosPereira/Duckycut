@@ -871,7 +871,7 @@
         }
         result.silenceIntervals = silenceIntervals;
 
-        showResults(result, keepZones, true);
+        showResults(result, keepZones, true, analysisWindowDuration);
         setStatus("Analysis complete - threshold: " + threshold + " dB (Premiere audio mix)", "success");
         return keepZones;
     }
@@ -993,9 +993,15 @@
     }
 
     // ── Show Results ─────────────────────────────────────────────
-    function showResults(analysis, zones, wasRendered) {
+    // windowDurationSeconds: duration actually analyzed (the In-Out range in
+    // that mode); using the full sequence there would count everything outside
+    // the range as "time saved".
+    function showResults(analysis, zones, wasRendered, windowDurationSeconds) {
         var totalKept = zones.reduce((sum, z) => sum + (z[1] - z[0]), 0);
-        var timeSaved = analysis.mediaDuration - totalKept;
+        var baseDuration = (typeof windowDurationSeconds === "number" && windowDurationSeconds > 0)
+            ? windowDurationSeconds
+            : analysis.mediaDuration;
+        var timeSaved = Math.max(0, baseDuration - totalKept);
         var renderNote = wasRendered
             ? '<div class="result-line result-note"><span>Audio source:</span><span class="result-value">Rendered mixdown</span></div>'
             : '<div class="result-line result-note"><span>Audio source:</span><span class="result-value">Source file</span></div>';

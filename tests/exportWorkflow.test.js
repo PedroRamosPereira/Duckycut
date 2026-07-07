@@ -1049,3 +1049,10 @@ test("sequence auto refresh does not announce status; manual refresh does", () =
     assert.match(main, /if \(announceStatus === true\) setStatus\("Sequence: "/, "status should only be announced explicitly");
     assert.match(main, /refreshSequence\(true\)/, "manual refresh button must announce the sequence");
 });
+
+test("panel results derive time saved from the analysis window", () => {
+    const main = readProjectFile("client/js/main.js");
+
+    assert.match(main, /function showResults\(analysis, zones, wasRendered, windowDurationSeconds\)/, "showResults should receive the analysis window duration");
+    assert.match(main, /showResults\(result, keepZones, true, analysisWindowDuration\)/, "In-Out results must be computed against the analyzed window, not the full sequence");
+});

@@ -1041,3 +1041,11 @@ test("panel progress helpers cancel a pending hide before showing again", () => 
     assert.match(main, /function showProgress\(text\) \{\s*\n\s*cancelPendingHideProgress\(\);/, "showProgress should cancel a pending hide");
     assert.match(main, /function updateProgress\(pct, text\) \{\s*\n\s*cancelPendingHideProgress\(\);/, "updateProgress should cancel a pending hide");
 });
+
+test("sequence auto refresh does not announce status; manual refresh does", () => {
+    const main = readProjectFile("client/js/main.js");
+
+    assert.match(main, /function refreshSequence\(announceStatus\)/, "refreshSequence should accept an announce flag");
+    assert.match(main, /if \(announceStatus === true\) setStatus\("Sequence: "/, "status should only be announced explicitly");
+    assert.match(main, /refreshSequence\(true\)/, "manual refresh button must announce the sequence");
+});

@@ -299,7 +299,7 @@
 
     // ── Buttons ───────────────────────────────────────────────────
     function bindButtons() {
-        if (elBtnRefreshSeq) elBtnRefreshSeq.addEventListener("click", refreshSequence);
+        if (elBtnRefreshSeq) elBtnRefreshSeq.addEventListener("click", function () { refreshSequence(true); });
         if (elBtnAnalyze) elBtnAnalyze.addEventListener("click", runAnalysis);
         if (elBtnApply) elBtnApply.addEventListener("click", applyCuts);
         if (elBtnCancelApply) elBtnCancelApply.addEventListener("click", cancelApplyCutsFromPanel);
@@ -450,7 +450,9 @@
     }
 
     // ── Refresh Sequence ─────────────────────────────────────────
-    function refreshSequence() {
+    // announceStatus === true only for the manual refresh button; the 5s auto
+    // refresh stays silent so it can't clobber error messages in the status bar.
+    function refreshSequence(announceStatus) {
         if (isRefreshingSequence) return Promise.resolve();
         isRefreshingSequence = true;
         return evalScript("getActiveSequenceInfo()").then((result) => {
@@ -465,7 +467,7 @@
                 sequenceInfo = info;
                 elSequenceName.textContent = info.name;
                 populateTrackCheckboxes(info.audioTracks);
-                setStatus("Sequence: " + info.name + " (" + info.framerate.toFixed(2) + " fps)", "success");
+                if (announceStatus === true) setStatus("Sequence: " + info.name + " (" + info.framerate.toFixed(2) + " fps)", "success");
             } catch (e) {
                 elSequenceName.textContent = "No sequence"; sequenceInfo = null;
             }

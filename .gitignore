@@ -1,4 +1,5 @@
 node_modules/
+dist/
 *.xml
 !CSXS/manifest.xml
 .DS_Store

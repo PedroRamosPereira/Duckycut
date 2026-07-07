@@ -4,6 +4,8 @@
     "description": "CEP extension for Adobe Premiere Pro — automatic silence detection and removal using FFmpeg",
     "scripts": {
         "install-extension": "node scripts/install.js",
+        "release:prepare": "node scripts/prepare-release.js",
+        "release:installer": "powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1",
         "test": "node --test tests"
     },
     "keywords": [

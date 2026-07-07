@@ -1033,3 +1033,11 @@ test("panel render polling times out even when the file already exists", () => {
     assert.notEqual(existsIdx, -1, "existence check should exist");
     assert.ok(timeoutIdx < existsIdx, "timeout must be checked before the existsSync branch so stalled files also time out");
 });
+
+test("panel progress helpers cancel a pending hide before showing again", () => {
+    const main = readProjectFile("client/js/main.js");
+
+    assert.match(main, /let hideProgressTimer = null;/, "pending hide timer should be tracked");
+    assert.match(main, /function showProgress\(text\) \{\s*\n\s*cancelPendingHideProgress\(\);/, "showProgress should cancel a pending hide");
+    assert.match(main, /function updateProgress\(pct, text\) \{\s*\n\s*cancelPendingHideProgress\(\);/, "updateProgress should cancel a pending hide");
+});

@@ -126,6 +126,7 @@
     let isRefreshingSequence = false;
     let sequenceAutoRefreshTimer = null;
     let applyCancelRequested = false;
+    let hideProgressTimer = null;
     let activeScreenName = "start";
     let analysisRangeMode = "full";
     let analysisRangeInfo = null;
@@ -1271,17 +1272,29 @@
     }
 
     // ── UI Helpers ────────────────────────────────────────────────
+    function cancelPendingHideProgress() {
+        if (hideProgressTimer) {
+            clearTimeout(hideProgressTimer);
+            hideProgressTimer = null;
+        }
+    }
     function showProgress(text) {
+        cancelPendingHideProgress();
         elProgressSection.style.display = "block";
         elProgressFill.style.width = "0%";
         elProgressText.textContent = text;
     }
     function updateProgress(pct, text) {
+        cancelPendingHideProgress();
         elProgressFill.style.width = pct + "%";
         if (text) elProgressText.textContent = text;
     }
     function hideProgress() {
-        setTimeout(() => { elProgressSection.style.display = "none"; }, 1500);
+        cancelPendingHideProgress();
+        hideProgressTimer = setTimeout(() => {
+            elProgressSection.style.display = "none";
+            hideProgressTimer = null;
+        }, 1500);
     }
     function setStatus(msg, type) {
         elStatusBar.textContent = msg;

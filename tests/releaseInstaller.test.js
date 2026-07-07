@@ -94,3 +94,9 @@ test("dev install script detects broken junctions with lstat", () => {
     assert.match(script, /fs\.lstatSync\(targetPath\)/, "broken symlinks are invisible to existsSync; lstat must be used");
     assert.doesNotMatch(script, /fs\.existsSync\(targetPath\)/, "existsSync would skip broken junctions and fail with EEXIST");
 });
+
+test("installer build stops when payload preparation fails", () => {
+    const script = read("scripts/build-installer.ps1");
+
+    assert.match(script, /\$LASTEXITCODE -ne 0/, "PowerShell 5.1 does not stop on native exe failure; the exit code must be checked");
+});

@@ -27,6 +27,9 @@ function Find-InnoCompiler {
 
 Write-Host "Preparing Duckycut release payload..."
 node (Join-Path $ProjectRoot "scripts\prepare-release.js")
+if ($LASTEXITCODE -ne 0) {
+    throw "Release payload preparation failed (exit code $LASTEXITCODE)."
+}
 
 $iscc = Find-InnoCompiler
 if (-not $iscc) {

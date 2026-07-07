@@ -1069,3 +1069,12 @@ test("host apply cuts refuses to resync onto a different sequence", () => {
     assert.doesNotMatch(fn, /refreshedSeq = app\.project\.activeSequence/, "razor refresh resync must go through the sequenceID guard");
     assert.doesNotMatch(fn, /targetSeq = app\.project\.activeSequence/, "target wait resync must go through the sequenceID guard");
 });
+
+test("host keeps only live entry points (no legacy XML/probe functions)", () => {
+    const host = readProjectFile("host/index.jsx");
+
+    assert.doesNotMatch(host, /function getAllMediaPaths\(/, "legacy media path listing has no caller");
+    assert.doesNotMatch(host, /function importXMLToProject\(/, "FCP7 XML import path was retired in 2026-05-23");
+    assert.doesNotMatch(host, /function getAudioTrackMediaPath\(/, "Auto Detect probe path was removed with its UI");
+    assert.doesNotMatch(host, /function _clipFullyInside\(/, "seconds-based clip inclusion was replaced by the ticks version");
+});

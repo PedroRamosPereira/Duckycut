@@ -139,14 +139,6 @@ function _secondsToQeRazorTimecodeHost(seconds, fps, isDropFrame, isNTSC) {
     return pad(hh) + ":" + pad(mm) + ":" + pad(ss) + ";" + pad(ff);
 }
 
-function _clipFullyInside(clipStartSec, clipEndSec, zoneStartSec, zoneEndSec, fps) {
-    // 1.5 frames covers NTSC tick-to-seconds drift (up to ~1 frame off)
-    // without false-positives: keep-zone clips are much longer than 3 frames.
-    var tol = (fps && fps > 0) ? (1.5 / fps) : 0.06;
-    return (clipStartSec >= zoneStartSec - tol) &&
-           (clipEndSec   <= zoneEndSec   + tol);
-}
-
 function _isApplyCutsCancelled() {
     return DUCKYCUT_CANCEL_APPLY === true;
 }
@@ -236,49 +228,6 @@ function getActiveSequenceInfo() {
 }
 
 /**
- * Gets the file path of the first clip in a given audio track.
- */
-function getAudioTrackMediaPath(trackIndex) {
-    try {
-        var seq = app.project.activeSequence;
-        if (!seq) return '{"error":"No active sequence"}';
-
-        var idx = parseInt(trackIndex, 10);
-        if (isNaN(idx)) idx = 0;
-
-        var track = seq.audioTracks[idx];
-        if (!track) return '{"error":"Track ' + idx + ' not found"}';
-
-        var numClips = 0;
-        try { numClips = track.clips.numItems; } catch (e) {}
-
-        if (numClips > 0) {
-            var clip = track.clips[0];
-            if (clip && clip.projectItem) {
-                var mPath = clip.projectItem.getMediaPath();
-                if (mPath) return '{"path":"' + mPath.replace(/\\/g, "/") + '"}';
-            }
-        }
-
-        // Fallback: try video track
-        try {
-            var vTrack = seq.videoTracks[0];
-            if (vTrack && vTrack.clips.numItems > 0) {
-                var vClip = vTrack.clips[0];
-                if (vClip.projectItem) {
-                    var vPath = vClip.projectItem.getMediaPath();
-                    if (vPath) return '{"path":"' + vPath.replace(/\\/g, "/") + '"}';
-                }
-            }
-        } catch (e) {}
-
-        return '{"error":"Track has no clips"}';
-    } catch (e) {
-        return '{"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
-    }
-}
-
-/**
  * Reads ALL clips from ALL video and audio tracks in the sequence.
  * Returns an array of clip descriptors to reconstruct the timeline in XML.
  */
@@ -359,82 +308,6 @@ function getFullSequenceClips() {
         } catch (e) {}
 
         return JSON.stringify(clips);
-    } catch (e) {
-        return '{"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
-    }
-}
-
-/**
- * Gets the file path of the first clip in a given audio track.
- */
-function getAllMediaPaths() {
-    try {
-        var seq = app.project.activeSequence;
-        if (!seq) return '{"error":"No active sequence"}';
-
-        var results = [];
-
-        for (var t = 0; t < seq.audioTracks.numTracks; t++) {
-            var track = seq.audioTracks[t];
-            var numClips = 0;
-            try { numClips = track.clips.numItems; } catch (e) { continue; }
-            for (var c = 0; c < numClips; c++) {
-                try {
-                    var clip = track.clips[c];
-                    var pi = clip.projectItem;
-                    if (!pi) continue;
-                    var mPath = pi.getMediaPath();
-                    if (!mPath) continue;
-                    var startSec = 0, endSec = 0;
-                    try { startSec = clip.start.seconds; } catch (e) {}
-                    try { endSec   = clip.end.seconds;   } catch (e) {}
-                    results.push({
-                        trackIndex: t,
-                        trackName:  track.name || ("Audio " + (t + 1)),
-                        clipIndex:  c,
-                        clipName:   clip.name || "",
-                        mediaPath:  mPath.replace(/\\/g, "/"),
-                        startTime:  startSec,
-                        endTime:    endSec
-                    });
-                } catch (e) { continue; }
-            }
-        }
-
-        for (var v = 0; v < seq.videoTracks.numTracks; v++) {
-            var vTrack = seq.videoTracks[v];
-            var vNumClips = 0;
-            try { vNumClips = vTrack.clips.numItems; } catch (e) { continue; }
-            for (var vc = 0; vc < vNumClips; vc++) {
-                try {
-                    var vClip = vTrack.clips[vc];
-                    var vPi = vClip.projectItem;
-                    if (!vPi) continue;
-                    var vPath = vPi.getMediaPath();
-                    if (!vPath) continue;
-                    var exists = false;
-                    for (var rr = 0; rr < results.length; rr++) {
-                        if (results[rr].mediaPath === vPath.replace(/\\/g, "/")) { exists = true; break; }
-                    }
-                    if (!exists) {
-                        var vStart = 0, vEnd = 0;
-                        try { vStart = vClip.start.seconds; } catch (e) {}
-                        try { vEnd   = vClip.end.seconds;   } catch (e) {}
-                        results.push({
-                            trackIndex: v,
-                            trackName:  "Video " + (v + 1),
-                            clipIndex:  vc,
-                            clipName:   vClip.name || "",
-                            mediaPath:  vPath.replace(/\\/g, "/"),
-                            startTime:  vStart,
-                            endTime:    vEnd
-                        });
-                    }
-                } catch (e) { continue; }
-            }
-        }
-
-        return JSON.stringify(results);
     } catch (e) {
         return '{"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
     }
@@ -620,18 +493,6 @@ function exportSequenceAudio(outputPath, extensionPath, workAreaType, presetMode
         });
     } catch (e) {
         return '{"success":false,"error":"' + e.toString().replace(/"/g, '\\"') + '"}';
-    }
-}
-
-/**
- * Imports an FCP7 XML file into the Premiere project.
- */
-function importXMLToProject(xmlPath) {
-    try {
-        app.project.importFiles([xmlPath], 1, app.project.rootItem, 0);
-        return '{"success":true,"message":"XML imported"}';
-    } catch (e) {
-        return '{"success":false,"message":"' + e.toString().replace(/"/g, '\\"') + '"}';
     }
 }
 

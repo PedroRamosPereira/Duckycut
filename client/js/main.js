@@ -590,11 +590,11 @@
 
             function tick() {
                 try {
+                    if (Date.now() - startedAt > timeoutMs) {
+                        reject(new Error("Timeout waiting for Premiere render output"));
+                        return;
+                    }
                     if (!nodeFs.existsSync(filePath)) {
-                        if (Date.now() - startedAt > timeoutMs) {
-                            reject(new Error("Timeout waiting for Premiere render output"));
-                            return;
-                        }
                         setTimeout(tick, 300);
                         return;
                     }

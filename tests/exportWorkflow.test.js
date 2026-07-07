@@ -1019,3 +1019,17 @@ test("panel formatTime rounds total seconds before splitting minutes", () => {
     assert.match(main, /var total = Math\.max\(0, Math\.round\(seconds\)\);/, "formatTime should round total seconds once");
     assert.doesNotMatch(main, /Math\.round\(seconds % 60\)/, "formatTime must not round the remainder into a 60s label");
 });
+
+test("panel render polling times out even when the file already exists", () => {
+    const main = readProjectFile("client/js/main.js");
+    const start = main.indexOf("function waitForStableFile");
+    assert.notEqual(start, -1, "waitForStableFile should exist");
+    const end = main.indexOf("function ensureSelectedTrackMixdown", start + 1);
+    const fn = main.slice(start, end === -1 ? main.length : end);
+
+    const timeoutIdx = fn.indexOf("Date.now() - startedAt > timeoutMs");
+    const existsIdx = fn.indexOf("existsSync(filePath)");
+    assert.notEqual(timeoutIdx, -1, "timeout check should exist");
+    assert.notEqual(existsIdx, -1, "existence check should exist");
+    assert.ok(timeoutIdx < existsIdx, "timeout must be checked before the existsSync branch so stalled files also time out");
+});

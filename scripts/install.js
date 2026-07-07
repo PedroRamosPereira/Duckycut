@@ -44,10 +44,13 @@ try {
         console.log("Created CEP extensions folder:", cepFolder);
     }
 
-    // Remove existing symlink/folder
-    if (fs.existsSync(targetPath)) {
-        const stats = fs.lstatSync(targetPath);
-        if (stats.isSymbolicLink()) {
+    // Remove existing symlink/folder. lstat instead of exists: a broken
+    // junction (target moved/deleted) is invisible to existsSync but still
+    // makes symlinkSync fail with EEXIST.
+    let existingStats = null;
+    try { existingStats = fs.lstatSync(targetPath); } catch (_) {}
+    if (existingStats) {
+        if (existingStats.isSymbolicLink()) {
             fs.unlinkSync(targetPath);
         } else {
             console.log("WARNING: Existing folder at", targetPath);

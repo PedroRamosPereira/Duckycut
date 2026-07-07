@@ -87,3 +87,10 @@ test("build installer script prepares payload and explains missing Inno Setup", 
     assert.match(script, /winget install JRSoftware\.InnoSetup|Inno Setup/i, "build should explain how to install Inno Setup");
     assert.match(script, /dist\\installer\\DuckycutSetup\.exe/, "build should point to the final exe path");
 });
+
+test("dev install script detects broken junctions with lstat", () => {
+    const script = read("scripts/install.js");
+
+    assert.match(script, /fs\.lstatSync\(targetPath\)/, "broken symlinks are invisible to existsSync; lstat must be used");
+    assert.doesNotMatch(script, /fs\.existsSync\(targetPath\)/, "existsSync would skip broken junctions and fail with EEXIST");
+});

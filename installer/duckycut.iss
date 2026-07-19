@@ -128,6 +128,26 @@ begin
     'Baixando FFmpeg e Node.js para o Duckycut...', nil);
 end;
 
+function TryDownloadTool(const Url, ZipName, ToolLabel: String): Boolean;
+begin
+  Result := True;
+  DownloadPage.Clear;
+  DownloadPage.Add(Url, ZipName, '');
+  try
+    DownloadPage.Download;
+  except
+    Result := False;
+    if DownloadWarning <> '' then
+      DownloadWarning := DownloadWarning + #13#10;
+    DownloadWarning := DownloadWarning +
+      'Nao foi possivel baixar ' + ToolLabel + ' (sem internet?). ' +
+      'A instalacao continuou; instale manualmente e coloque no PATH.';
+  end;
+end;
+
+// Observacao: instalacoes silenciosas (/SILENT, /VERYSILENT) nunca disparam
+// NextButtonClick, entao o download das dependencias so acontece em
+// instalacoes interativas (limitacao conhecida).
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
@@ -137,20 +157,12 @@ begin
     NeedNode := not IsToolOnPath('node');
     if NeedFFmpeg or NeedNode then
     begin
-      DownloadPage.Clear;
-      if NeedFFmpeg then
-        DownloadPage.Add('{#FFmpegUrl}', 'ffmpeg.zip', '');
-      if NeedNode then
-        DownloadPage.Add('{#NodeUrl}', 'node.zip', '');
       DownloadPage.Show;
       try
-        try
-          DownloadPage.Download;
-        except
-          DownloadWarning :=
-            'Nao foi possivel baixar FFmpeg/Node.js (sem internet?). ' +
-            'A instalacao continuou; instale manualmente e coloque no PATH.';
-        end;
+        if NeedFFmpeg then
+          TryDownloadTool('{#FFmpegUrl}', 'ffmpeg.zip', 'FFmpeg');
+        if NeedNode then
+          TryDownloadTool('{#NodeUrl}', 'node.zip', 'Node.js');
       finally
         DownloadPage.Hide;
       end;

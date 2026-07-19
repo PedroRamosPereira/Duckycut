@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const childProcess = require("child_process");
+const { resolveTool } = require("./toolPaths");
 
 const DEFAULT_SAMPLE_RATE = 16000;
 const DEFAULT_WINDOW_SIZE = 512;
@@ -102,7 +103,7 @@ function runExternalNodeVad(wavPath, opts, originalError) {
 
     return new Promise((resolve, reject) => {
         const workerPath = path.join(__dirname, "vadWorker.js");
-        const nodeCommand = opts.nodeCommand || "node";
+        const nodeCommand = opts.nodeCommand || resolveTool("node");
         const worker = childProcess.spawn(nodeCommand, [workerPath], {
             cwd: path.resolve(__dirname, ".."),
             windowsHide: true,

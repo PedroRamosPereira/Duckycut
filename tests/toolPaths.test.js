@@ -40,3 +40,16 @@ test("resolveTool falls back to the bare name when binDir does not exist", () =>
 test("DEFAULT_BIN_DIR points to <extension root>/bin", () => {
     assert.equal(DEFAULT_BIN_DIR, path.join(path.resolve(__dirname, ".."), "bin"));
 });
+
+test("silenceDetector spawns ffmpeg through resolveTool", () => {
+    const src = fs.readFileSync(path.join(__dirname, "..", "server", "silenceDetector.js"), "utf8");
+    assert.match(src, /require\("\.\/toolPaths"\)/);
+    assert.doesNotMatch(src, /spawn\("ffmpeg"/, "spawn must use resolveTool(\"ffmpeg\"), not the bare name");
+    assert.match(src, /spawn\(resolveTool\("ffmpeg"\)/);
+});
+
+test("vadDetector resolves the external node through resolveTool", () => {
+    const src = fs.readFileSync(path.join(__dirname, "..", "server", "vadDetector.js"), "utf8");
+    assert.match(src, /require\("\.\/toolPaths"\)/);
+    assert.match(src, /opts\.nodeCommand \|\| resolveTool\("node"\)/);
+});

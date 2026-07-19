@@ -16,6 +16,7 @@
  */
 
 const { spawn } = require("child_process");
+const { resolveTool } = require("./toolPaths");
 const os        = require("os");
 const path      = require("path");
 const fs        = require("fs");
@@ -31,7 +32,7 @@ function probeAudio(mediaPath) {
             "-af", "volumedetect",
             "-f", "null", "-",
         ];
-        const proc = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+        const proc = spawn(resolveTool("ffmpeg"), args, { stdio: ["ignore", "pipe", "pipe"] });
         let output = "";
         proc.stdout.on("data", (d) => (output += d.toString()));
         proc.stderr.on("data",  (d) => (output += d.toString()));
@@ -84,7 +85,7 @@ function detectSilence(mediaPath, thresholdDb, minDuration) {
             "-af", `silencedetect=n=${thresholdDb}dB:d=${minDuration}`,
             "-f", "null", "-",
         ];
-        const proc = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+        const proc = spawn(resolveTool("ffmpeg"), args, { stdio: ["ignore", "pipe", "pipe"] });
         let output = "";
         proc.stdout.on("data", (d) => (output += d.toString()));
         proc.stderr.on("data",  (d) => (output += d.toString()));
@@ -184,7 +185,7 @@ function buildMixedAudio(clips, outputPath) {
             "-y", outputPath
         );
 
-        const proc = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+        const proc = spawn(resolveTool("ffmpeg"), args, { stdio: ["ignore", "pipe", "pipe"] });
         let stderr = "";
         proc.stderr.on("data", (d) => (stderr += d.toString()));
         proc.on("error", reject);

@@ -115,3 +115,10 @@ test("installer downloads FFmpeg and Node when missing and extracts them to app 
     assert.match(iss, /where\.exe|Get-Command/, "installer must skip downloads when the tool is already on PATH");
     assert.match(iss, /\[UninstallDelete\]/, "downloaded binaries must be removed on uninstall");
 });
+
+test("dependency check accepts bundled binaries in the install bin folder", () => {
+    const check = read("installer/scripts/check-dependencies.ps1");
+
+    assert.match(check, /bin\\ffmpeg\.exe|bin\\\$Name\.exe/i, "check must look at <install>\\bin before PATH");
+    assert.match(check, /bundled/i, "report should say when the tool is the bundled one");
+});

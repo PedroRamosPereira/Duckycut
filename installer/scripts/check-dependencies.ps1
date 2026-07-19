@@ -19,22 +19,28 @@ function Add-Result {
     }
 }
 
-function Test-CommandOnPath {
+function Test-Tool {
     param(
         [string]$Name,
         [string]$FriendlyName
     )
 
+    $bundled = Join-Path $InstallDir "bin\$Name.exe"
+    if (Test-Path -LiteralPath $bundled) {
+        Add-Result "OK" "$FriendlyName bundled with Duckycut: $bundled"
+        return
+    }
+
     $command = Get-Command $Name -ErrorAction SilentlyContinue
     if ($command) {
         Add-Result "OK" "$FriendlyName found on PATH: $($command.Source)"
     } else {
-        Add-Result "MISSING" "$FriendlyName was not found on PATH. Install it and restart Premiere before using Duckycut."
+        Add-Result "MISSING" "$FriendlyName was not found (neither bundled nor on PATH). Install it and restart Premiere before using Duckycut."
     }
 }
 
-Test-CommandOnPath "ffmpeg" "FFmpeg"
-Test-CommandOnPath "node" "Node.js"
+Test-Tool "ffmpeg" "FFmpeg"
+Test-Tool "node" "Node.js"
 
 $cepFolder = Join-Path $env:APPDATA "Adobe\CEP\extensions"
 if (Test-Path -LiteralPath $cepFolder) {

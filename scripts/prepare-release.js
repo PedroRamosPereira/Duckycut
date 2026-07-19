@@ -13,11 +13,12 @@ const requiredEntries = [
     "server/vadDetector.js",
     "server/vadWorker.js",
     "server/models/silero_vad.onnx",
+    "server/toolPaths.js",
     "package.json",
     "package-lock.json"
 ];
 
-const optionalNodeModules = [
+const requiredNodeModules = [
     "onnxruntime-node",
     "onnxruntime-common"
 ];
@@ -78,13 +79,11 @@ function copyEntry(relativePath) {
     copyRecursive(source, destination);
 }
 
-function copyOptionalNodeDependency(packageName) {
+function copyRequiredNodeDependency(packageName) {
     const source = path.join(root, "node_modules", packageName);
     if (!fs.existsSync(source)) {
-        console.warn("Optional dependency not copied because it is not installed: " + packageName);
-        return;
+        throw new Error("Required dependency is not installed (run npm install first): " + packageName);
     }
-
     copyRecursive(source, path.join(outputDir, "node_modules", packageName));
 }
 
@@ -96,8 +95,8 @@ function prepareRelease() {
         copyEntry(entry);
     }
 
-    for (const packageName of optionalNodeModules) {
-        copyOptionalNodeDependency(packageName);
+    for (const packageName of requiredNodeModules) {
+        copyRequiredNodeDependency(packageName);
     }
 
     console.log("Duckycut release payload prepared:");

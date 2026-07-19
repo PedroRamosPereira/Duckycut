@@ -29,13 +29,16 @@ test("release preparation script ships only the CEP payload needed by Duckycut",
         "server/vadDetector.js",
         "server/vadWorker.js",
         "server/models/silero_vad.onnx",
+        "server/toolPaths.js",
         "package.json",
         "package-lock.json"
     ].forEach((required) => {
         assert.match(script, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\//g, "[/\\\\]")));
     });
 
-    assert.match(script, /onnxruntime-node/, "native ONNX dependency should be copied when installed");
+    assert.match(script, /onnxruntime-node/, "native ONNX dependency must ship in the payload");
+    assert.match(script, /requiredNodeModules/, "onnxruntime must be required, not optional");
+    assert.doesNotMatch(script, /optionalNodeModules/, "missing onnxruntime must abort the release build");
     assert.doesNotMatch(script, /tests[/\\\\]/, "tests should not be part of the release payload");
     assert.doesNotMatch(script, /\.git[/\\\\]/, ".git should not be part of the release payload");
     assert.match(script, /fs\.cpSync|copyRecursive/, "payload should use real file copies");

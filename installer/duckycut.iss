@@ -150,8 +150,6 @@ begin
           DownloadWarning :=
             'Nao foi possivel baixar FFmpeg/Node.js (sem internet?). ' +
             'A instalacao continuou; instale manualmente e coloque no PATH.';
-          NeedFFmpeg := False;
-          NeedNode := False;
         end;
       finally
         DownloadPage.Hide;
@@ -187,11 +185,11 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
-    if NeedFFmpeg then
+    if NeedFFmpeg and FileExists(ExpandConstant('{tmp}\ffmpeg.zip')) then
       if not ExtractToolFromZip('ffmpeg.zip', 'ffmpeg.exe') then
         DownloadWarning := DownloadWarning + #13#10 +
           'FFmpeg foi baixado mas nao pode ser extraido para a pasta bin do Duckycut.';
-    if NeedNode then
+    if NeedNode and FileExists(ExpandConstant('{tmp}\node.zip')) then
       if not ExtractToolFromZip('node.zip', 'node.exe') then
         DownloadWarning := DownloadWarning + #13#10 +
           'Node.js foi baixado mas nao pode ser extraido para a pasta bin do Duckycut.';

@@ -103,3 +103,15 @@ test("installer build stops when payload preparation fails", () => {
 
     assert.match(script, /\$LASTEXITCODE -ne 0/, "PowerShell 5.1 does not stop on native exe failure; the exit code must be checked");
 });
+
+test("installer downloads FFmpeg and Node when missing and extracts them to app bin", () => {
+    const iss = read("installer/duckycut.iss");
+
+    assert.match(iss, /CreateDownloadPage/, "installer should use the Inno Setup 6 download page");
+    assert.match(iss, /gyan\.dev\/ffmpeg\/builds\/ffmpeg-release-essentials\.zip/, "FFmpeg comes from the gyan.dev static release build");
+    assert.match(iss, /nodejs\.org\/dist\/v22\.12\.0\/node-v22\.12\.0-win-x64\.zip/, "Node version must be pinned");
+    assert.match(iss, /Expand-Archive/, "zips are extracted with PowerShell");
+    assert.match(iss, /\{app\}\\bin/, "binaries land inside the extension bin folder");
+    assert.match(iss, /where\.exe|Get-Command/, "installer must skip downloads when the tool is already on PATH");
+    assert.match(iss, /\[UninstallDelete\]/, "downloaded binaries must be removed on uninstall");
+});

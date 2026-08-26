@@ -1,9 +1,12 @@
 node_modules/
 dist/
+.worktrees/
 *.xml
 !CSXS/manifest.xml
 .DS_Store
 Thumbs.db
 *.log
 .claude
-docs
+docs/*
+!docs/superpowers/
+!docs/superpowers/**
